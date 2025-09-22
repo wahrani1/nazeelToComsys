@@ -260,7 +260,7 @@ class NazeelComsysIntegrator:
     
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "NZAPI"
+        return "101"
     
     def check_duplicate_docu(self, conn, docu: str, year: str, month: str, serial: int) -> bool:
         """Check if document number already exists"""
@@ -297,7 +297,7 @@ class NazeelComsysIntegrator:
         
         sql = f"""
         INSERT INTO {HED_TABLE} (Docu, Year, Month, Serial, Date, Currency, Rate, Posted, ReEvaluate, RepeatedSerial, Flag, rowguid)
-        VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', 'SAR', 1.0, 0, 0, NULL, NULL, '{row_guid}')
+        VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', '001', 1.0, 0, 0, NULL, NULL, '{row_guid}')
         """
         cursor.execute(sql)
         logging.info(f"Inserted {HED_TABLE} record: {docu}-{year}-{month}-{serial} for transaction date {transaction_date}")
