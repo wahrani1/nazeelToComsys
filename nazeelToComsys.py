@@ -259,7 +259,7 @@ class NazeelComsysIntegrator:
         # Log payment method breakdown
         for method_id, amount in aggregation['payment_methods'].items():
             method_name = \
-            PAYMENT_METHOD_ACCOUNTS.get(method_id, (f"Unknown-{method_id}", f"Unknown Method {method_id}"))[1]
+                PAYMENT_METHOD_ACCOUNTS.get(method_id, (f"Unknown-{method_id}", f"Unknown Method {method_id}"))[1]
             logging.info(f"  Payment Method {method_id} ({method_name}): {amount:.2f}")
 
         return aggregation
