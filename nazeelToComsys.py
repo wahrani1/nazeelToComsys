@@ -49,9 +49,9 @@ PAYMENT_METHOD_ACCOUNTS = {
     3: ("011200060", "Master Card"),
     4: ("011200050", "Visa Card"),
     5: ("011500001", "Aljazera Bank"),
-    6: ("011200070", "American Express"),  # Adding common payment methods
-    7: ("011200080", "Payment Method 7"),  # Add account for method 7
-    8: ("011200090", "Payment Method 8"),  # Add account for method 8
+    6: ("011200070", "American Express"),  
+    7: ("011200080", "Payment Method 7"),  
+    8: ("011200090", "Payment Method 8"), 
     9: ("011500010", "Bank Transfer"),
     10: ("011200100", "Other Electronic Payment")
 }
