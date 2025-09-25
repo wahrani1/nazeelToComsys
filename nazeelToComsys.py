@@ -28,6 +28,7 @@ HED_TABLE = "FhglTxHed"
 DED_TABLE = "FhglTxDed"
 
 # SQL to create processed invoices tracking table
+
 CREATE_PROCESSED_INVOICES_TABLE = """
 IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Processed_Invoices' AND xtype='U')
 CREATE TABLE Processed_Invoices (
