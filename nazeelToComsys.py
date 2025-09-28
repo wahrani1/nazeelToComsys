@@ -73,9 +73,9 @@ class NazeelComsysIntegrator:
             self.start_date = start_date
             self.end_date = end_date
         else:
-            # Default to last 30 days through today at 23:00
+            # Default to last 60 days through today at 23:00
             today = date.today()
-            self.start_date = today - timedelta(days=30)
+            self.start_date = today - timedelta(days=60)
             self.end_date = today
 
         self.current_date = date.today()
@@ -518,7 +518,7 @@ def main():
     """Main entry point"""
     import argparse
     parser = argparse.ArgumentParser(description='Nazeel to Comsys Integration - Daily Segregated Processing')
-    parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD), default: 30 days ago')
+    parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD), default: 60 days ago')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD), default: today')
     args = parser.parse_args()
 
@@ -526,9 +526,9 @@ def main():
         start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date()
         end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date()
     else:
-        # Default: last 30 days through today
+        # Default: last 60 days through today
         today = date.today()
-        start_date = today - timedelta(days=30)
+        start_date = today - timedelta(days=60)
         end_date = today
 
     logging.info(f"Date range: {start_date} to {end_date} ({(end_date - start_date).days + 1} days)")
