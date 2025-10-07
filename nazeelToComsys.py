@@ -47,12 +47,12 @@ CREATE TABLE Processed_Invoices (
 PAYMENT_METHOD_ACCOUNTS = {
     1: ("011500020", "Cash ( FO)"),
     2: ("011200065", "MADA"),
-    3: ("011200060", "Master Card"),
-    4: ("011200050", "Visa Card"),
+    3: ("011200060", "Payment Method 3"),
+    4: ("011200050", "Payment Method 4"),
     5: ("011500001", "Aljazera Bank"),
     6: ("011200070", "American Express"),
-    7: ("011200080", "Payment Method 7"),
-    8: ("011200090", "Payment Method 8"),
+    7: ("011200050", "Visa Card"),
+    8: ("011200060", "Master Card 8"),
     9: ("011500010", "Bank Transfer"),
     10: ("011200100", "Other Electronic Payment")
 }
@@ -288,7 +288,7 @@ class NazeelComsysIntegrator:
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "103"
+        return "113"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
