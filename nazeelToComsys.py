@@ -18,15 +18,19 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 # Configuration
-API_KEY = "tgh1QayxXvoXL8vnpQ5SOAZeR0ZeR0"
+API_KEY = "1kTT0EteHZcXL8vnpQ5SOAZeR0ZeR0"
 SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=alshoribat;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AlndalusLuxery2;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\AlndalusLuxery2\nazeel_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
 DED_TABLE = "FhglTxDed"
+
+# Cash Over & Short account for handling small differences
+CASH_OVER_SHORT_ACCOUNT = "505000098"
+MAX_CASH_OVER_SHORT = 10.00  # Maximum difference allowed in SAR
 
 # SQL to create processed invoices tracking table
 CREATE_PROCESSED_INVOICES_TABLE = """
@@ -47,12 +51,12 @@ CREATE TABLE Processed_Invoices (
 PAYMENT_METHOD_ACCOUNTS = {
     1: ("011500020", "Cash ( FO)"),
     2: ("011200065", "MADA"),
-    3: ("011200060", "Master Card"),
-    4: ("011200050", "Visa Card"),
+    3: ("011200060", "Payment Method 3"),
+    4: ("011200050", "Payment Method 4"),
     5: ("011500001", "Aljazera Bank"),
     6: ("011200070", "American Express"),
-    7: ("011200080", "Payment Method 7"),
-    8: ("011200090", "Payment Method 8"),
+    7: ("011200050", "Visa Card"),
+    8: ("011200060", "Master Card 8"),
     9: ("011500010", "Bank Transfer"),
     10: ("011200100", "Other Electronic Payment")
 }
@@ -285,7 +289,7 @@ class NazeelComsysIntegrator:
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "101"
+        return "114"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
@@ -310,45 +314,53 @@ class NazeelComsysIntegrator:
         row_guid = str(uuid.uuid4()).upper()
 
         sql = f"""
-        INSERT INTO {HED_TABLE} (Docu, Year, Month, Serial, Date, Currency, Rate, Posted, ReEvaluate, RepeatedSerial, Flag, rowguid)
-        VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', '001', 1.0, 0, 0, NULL, NULL, '{row_guid}')
+        INSERT INTO {HED_TABLE} (Docu, Year, Month, Serial, Date, Currency, Rate, Posted, ReEvaluate, RepeatedSerial, Flag)
+        VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', '001', 1.0, 0, 0, NULL, NULL)
         """
         cursor.execute(sql)
         logging.info(f"Inserted {HED_TABLE} record: {docu}-{year}-{month}-{serial} for invoice date {invoice_date}")
         return year, month, serial
 
     def insert_fhgl_tx_ded(self, conn, docu: str, year: str, month: str, serial: int, invoice_date: date, aggregation: Dict) -> None:
-        """Insert records into FhglTxDed table with proper debit/credit balance validation"""
+        """Insert records into FhglTxDed table with Cash Over & Short handling for differences"""
         cursor = conn.cursor()
         line = 1
 
+        # Round all amounts to 2 decimal places to avoid floating point errors
+        individual_rate = round(aggregation['individual_rate'], 2)
+        vat = round(aggregation['vat'], 2)
+        payment_methods = {k: round(v, 2) for k, v in aggregation['payment_methods'].items()}
+
         # Calculate totals for validation
-        total_credits = aggregation['individual_rate'] + aggregation['vat']
-        total_debits = sum(aggregation['payment_methods'].values())
+        total_credits = individual_rate + vat
+        total_debits = sum(payment_methods.values())
 
+        # Calculate the difference
+        difference = round(total_credits - total_debits, 2)
+        
         # Log the balance check
-        balance_diff = abs(total_credits - total_debits)
-        logging.info(f"Balance check for {invoice_date}: Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={balance_diff:.2f}")
+        logging.info(f"Balance check for {invoice_date}: Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={difference:.2f}")
 
-        if balance_diff > 0.01:
-            logging.error(f"CRITICAL: Debit/Credit imbalance detected for {invoice_date}! Difference: {balance_diff:.2f}")
+        # Check if difference exceeds maximum allowed
+        if abs(difference) > MAX_CASH_OVER_SHORT:
+            logging.error(f"CRITICAL: Debit/Credit imbalance exceeds {MAX_CASH_OVER_SHORT} SAR for {invoice_date}! Difference: {abs(difference):.2f}")
             logging.error("This indicates partially paid invoices are being processed as fully paid!")
-            raise ValueError(f"Accounting imbalance for {invoice_date}: Credits={total_credits:.2f}, Debits={total_debits:.2f}")
+            raise ValueError(f"Accounting imbalance for {invoice_date}: Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={abs(difference):.2f}")
 
         # Individual Rate (Credit)
-        if aggregation['individual_rate'] > 0:
+        if individual_rate > 0:
             self._insert_fhgl_tx_ded_line(
                 cursor, docu, year, month, serial, line,
-                "101000020", 0, aggregation['individual_rate'], 0, aggregation['individual_rate'],
+                "101000020", 0, individual_rate, 0, individual_rate,
                 f"FOC Dep.: Individual Rate for {invoice_date}"
             )
             line += 1
 
         # VAT (Credit)
-        if aggregation['vat'] > 0:
+        if vat > 0:
             self._insert_fhgl_tx_ded_line(
                 cursor, docu, year, month, serial, line,
-                "021500010", 0, aggregation['vat'], 0, aggregation['vat'],
+                "021500010", 0, vat, 0, vat,
                 f"FOC Dep.: Value Added Tax for {invoice_date}"
             )
             line += 1
@@ -362,7 +374,7 @@ class NazeelComsysIntegrator:
         line += 1
 
         # Payment Methods (Debits)
-        for method_id, amount in aggregation['payment_methods'].items():
+        for method_id, amount in payment_methods.items():
             if method_id in PAYMENT_METHOD_ACCOUNTS:
                 account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
                 self._insert_fhgl_tx_ded_line(
@@ -381,6 +393,26 @@ class NazeelComsysIntegrator:
                 )
                 line += 1
 
+        # Handle Cash Over & Short if there's a difference
+        if abs(difference) > 0:
+            if difference > 0:
+                # Credits > Debits: We need to debit Cash Over & Short
+                self._insert_fhgl_tx_ded_line(
+                    cursor, docu, year, month, serial, line,
+                    CASH_OVER_SHORT_ACCOUNT, abs(difference), 0, abs(difference), 0,
+                    f"FOC Dep.: Cash Over & Short for {invoice_date}"
+                )
+                logging.info(f"Added Cash Over & Short DEBIT of {abs(difference):.2f} SAR for {invoice_date}")
+            else:
+                # Debits > Credits: We need to credit Cash Over & Short
+                self._insert_fhgl_tx_ded_line(
+                    cursor, docu, year, month, serial, line,
+                    CASH_OVER_SHORT_ACCOUNT, 0, abs(difference), 0, abs(difference),
+                    f"FOC Dep.: Cash Over & Short for {invoice_date}"
+                )
+                logging.info(f"Added Cash Over & Short CREDIT of {abs(difference):.2f} SAR for {invoice_date}")
+            line += 1
+
         logging.info(f"Inserted {line - 1} {DED_TABLE} records with balanced debits/credits for {invoice_date}")
 
     def _insert_fhgl_tx_ded_line(self, cursor, docu: str, year: str, month: str, serial: int,
@@ -390,8 +422,8 @@ class NazeelComsysIntegrator:
         row_guid = str(uuid.uuid4()).upper()
         desc_truncated = desc[:40] if len(desc) > 40 else desc.replace("'", "''")
         sql = f"""
-        INSERT INTO {DED_TABLE} (Docu, Year, Month, Serial, Line, Account, ValuLeDr, ValuLeCr, ValuFcDr, ValuFcCr, [Desc], rowguid)
-        VALUES ('{docu}', '{year}', '{month}', {serial}, {line}, '{account}', {valu_le_dr}, {valu_le_cr}, {valu_fc_dr}, {valu_fc_cr}, '{desc_truncated}', '{row_guid}')
+        INSERT INTO {DED_TABLE} (Docu, Year, Month, Serial, Line, Account, ValuLeDr, ValuLeCr, ValuFcDr, ValuFcCr, [Desc])
+        VALUES ('{docu}', '{year}', '{month}', {serial}, {line}, '{account}', {valu_le_dr}, {valu_le_cr}, {valu_fc_dr}, {valu_fc_cr}, '{desc_truncated}')
         """
         cursor.execute(sql)
         logging.debug(f"Inserted {DED_TABLE} line {line}: {account} - Dr:{valu_le_dr}, Cr:{valu_le_cr}")
