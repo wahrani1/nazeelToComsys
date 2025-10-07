@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Nazeel API to Comsys Database Integration Script
+Enhanced to process invoices by date - creates separate records for each day's invoices
 Fetches invoice and receipt voucher data from Nazeel API and inserts into Comsys database
-Enhanced with 30-day lookback window for late payments
 """
 
 import requests
@@ -15,12 +15,13 @@ from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
 
 # Configuration
 API_KEY = "tgh1QayxXvoXL8vnpQ5SOAZeR0ZeR0"
 SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=alshoribat;Trusted_Connection=yes;"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AlndalusLuxery1;Trusted_Connection=yes;"
 LOG_FILE = r"C:\Scripts\nazeel_log.txt"
 
 # Table names
@@ -73,9 +74,9 @@ class NazeelComsysIntegrator:
             self.start_date = start_date
             self.end_date = end_date
         else:
-            # Default to last 30 days through today at 23:00
+            # Default to last 60 days through today at 23:00
             today = date.today()
-            self.start_date = today - timedelta(days=30)
+            self.start_date = today - timedelta(days=60)
             self.end_date = today
 
         self.current_date = date.today()
@@ -182,11 +183,41 @@ class NazeelComsysIntegrator:
         logging.info(f"Fetched {len(valid_receipts)} valid receipts")
         return valid_receipts
 
+    def group_invoices_by_date(self, invoices: List[Dict]) -> Dict[date, List[Dict]]:
+        """Group invoices by their invoice date"""
+        grouped_invoices = defaultdict(list)
+
+        for invoice in invoices:
+            invoice_date_str = invoice.get('invoiceDate', '')
+            if invoice_date_str:
+                try:
+                    # Parse the invoice date
+                    invoice_date = datetime.fromisoformat(invoice_date_str.replace('T00:00:00', '')).date()
+                    grouped_invoices[invoice_date].append(invoice)
+                except ValueError as e:
+                    logging.warning(
+                        f"Could not parse invoice date '{invoice_date_str}' for invoice {invoice.get('invoiceNumber')}: {e}")
+                    # Use today's date as fallback
+                    grouped_invoices[date.today()].append(invoice)
+            else:
+                logging.warning(f"Invoice {invoice.get('invoiceNumber')} has no invoice date, using today's date")
+                grouped_invoices[date.today()].append(invoice)
+
+        # Sort by date for consistent processing
+        sorted_groups = dict(sorted(grouped_invoices.items()))
+
+        logging.info(f"Grouped {len(invoices)} invoices into {len(sorted_groups)} date groups:")
+        for invoice_date, date_invoices in sorted_groups.items():
+            logging.info(f"  {invoice_date}: {len(date_invoices)} invoices")
+
+        return sorted_groups
+
     def identify_paid_invoices(self, invoices: List[Dict], receipts: List[Dict]) -> List[Dict]:
         """Identify fully paid invoices by matching with receipts"""
         paid_invoices = []
         new_invoices = self.filter_new_invoices(invoices)
         receipts_by_reservation = {}
+
         for receipt in receipts:
             reservation_num = receipt.get('reservationNumber')
             if reservation_num:
@@ -205,7 +236,7 @@ class NazeelComsysIntegrator:
                 if abs(receipt_total - total_amount) < 0.01:
                     invoice['matching_receipts'] = receipts_by_reservation[reservation_num]
                     paid_invoices.append(invoice)
-                    logging.info(
+                    logging.debug(
                         f"Invoice {invoice.get('invoiceNumber')} is fully paid: {receipt_total:.2f}/{total_amount:.2f}")
                 else:
                     logging.debug(
@@ -253,31 +284,11 @@ class NazeelComsysIntegrator:
                     aggregation['payment_methods'][method_id] = 0
                 aggregation['payment_methods'][method_id] += amount
 
-        logging.info(f"Aggregated data: Individual Rate: {aggregation['individual_rate']:.2f}, "
-                     f"VAT: {aggregation['vat']:.2f}, Payment Methods: {len(aggregation['payment_methods'])}")
-
-        # Log payment method breakdown
-        for method_id, amount in aggregation['payment_methods'].items():
-            method_name = \
-                PAYMENT_METHOD_ACCOUNTS.get(method_id, (f"Unknown-{method_id}", f"Unknown Method {method_id}"))[1]
-            logging.info(f"  Payment Method {method_id} ({method_name}): {amount:.2f}")
-
         return aggregation
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "101"
-
-    def check_duplicate_docu(self, conn, docu: str, year: str, month: str, serial: int) -> bool:
-        """Check if document number already exists"""
-        try:
-            cursor = conn.cursor()
-            cursor.execute(f"SELECT COUNT(*) FROM {HED_TABLE} WHERE Docu = ? AND Year = ? AND Month = ? AND Serial = ?",
-                           (docu, year, month, serial))
-            return cursor.fetchone()[0] > 0
-        except Exception as e:
-            logging.error(f"Error checking duplicate DOCU: {str(e)}")
-            return True
+        return "103"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
@@ -291,31 +302,29 @@ class NazeelComsysIntegrator:
             logging.error(f"Error getting next serial: {str(e)}")
             return 1
 
-    def insert_fhgl_tx_hed(self, conn, docu: str, aggregation: Dict) -> Tuple[str, str, int]:
-        """Insert record into FhglTxHed table"""
+    def insert_fhgl_tx_hed(self, conn, docu: str, invoice_date: date, aggregation: Dict) -> Tuple[str, str, int]:
+        """Insert record into FhglTxHed table for specific invoice date"""
         cursor = conn.cursor()
-        # Use current date for the transaction date, not the search date range
-        transaction_date = date.today()
-        year = str(transaction_date.year)
-        month = f"{transaction_date.month:02d}"
+        # Use the invoice date for the transaction record
+        year = str(invoice_date.year)
+        month = f"{invoice_date.month:02d}"
         serial = self.get_next_serial(conn, docu, year, month)
-        date_val = transaction_date.strftime('%Y-%m-%d')
+        date_val = invoice_date.strftime('%Y-%m-%d')
         row_guid = str(uuid.uuid4()).upper()
 
         sql = f"""
-        INSERT INTO {HED_TABLE} (Docu, Year, Month, Serial, Date, Currency, Rate, Posted, ReEvaluate, RepeatedSerial, Flag, rowguid)
-        VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', '001', 1.0, 0, 0, NULL, NULL, '{row_guid}')
+        INSERT INTO {HED_TABLE} (Docu, Year, Month, Serial, Date, Currency, Rate, Posted, ReEvaluate, RepeatedSerial, Flag)
+        VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', '001', 1.0, 0, 0, NULL, NULL)
         """
         cursor.execute(sql)
-        logging.info(
-            f"Inserted {HED_TABLE} record: {docu}-{year}-{month}-{serial} for transaction date {transaction_date}")
+        logging.info(f"Inserted {HED_TABLE} record: {docu}-{year}-{month}-{serial} for invoice date {invoice_date}")
         return year, month, serial
 
-    def insert_fhgl_tx_ded(self, conn, docu: str, year: str, month: str, serial: int, aggregation: Dict) -> None:
+    def insert_fhgl_tx_ded(self, conn, docu: str, year: str, month: str, serial: int, invoice_date: date,
+                           aggregation: Dict) -> None:
         """Insert records into FhglTxDed table with proper debit/credit balance validation"""
         cursor = conn.cursor()
         line = 1
-        transaction_date = date.today()
 
         # Calculate totals for validation
         total_credits = aggregation['individual_rate'] + aggregation['vat']
@@ -324,19 +333,21 @@ class NazeelComsysIntegrator:
         # Log the balance check
         balance_diff = abs(total_credits - total_debits)
         logging.info(
-            f"Balance check: Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={balance_diff:.2f}")
+            f"Balance check for {invoice_date}: Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={balance_diff:.2f}")
 
         if balance_diff > 0.01:
-            logging.error(f"CRITICAL: Debit/Credit imbalance detected! Difference: {balance_diff:.2f}")
+            logging.error(
+                f"CRITICAL: Debit/Credit imbalance detected for {invoice_date}! Difference: {balance_diff:.2f}")
             logging.error("This indicates partially paid invoices are being processed as fully paid!")
-            raise ValueError(f"Accounting imbalance: Credits={total_credits:.2f}, Debits={total_debits:.2f}")
+            raise ValueError(
+                f"Accounting imbalance for {invoice_date}: Credits={total_credits:.2f}, Debits={total_debits:.2f}")
 
         # Individual Rate (Credit)
         if aggregation['individual_rate'] > 0:
             self._insert_fhgl_tx_ded_line(
                 cursor, docu, year, month, serial, line,
                 "101000020", 0, aggregation['individual_rate'], 0, aggregation['individual_rate'],
-                f"FOC Dep.: Individual Rate for {transaction_date}"
+                f"FOC Dep.: Individual Rate for {invoice_date}"
             )
             line += 1
 
@@ -345,7 +356,7 @@ class NazeelComsysIntegrator:
             self._insert_fhgl_tx_ded_line(
                 cursor, docu, year, month, serial, line,
                 "021500010", 0, aggregation['vat'], 0, aggregation['vat'],
-                f"FOC Dep.: Value Added Tax for {transaction_date}"
+                f"FOC Dep.: Value Added Tax for {invoice_date}"
             )
             line += 1
 
@@ -353,7 +364,7 @@ class NazeelComsysIntegrator:
         self._insert_fhgl_tx_ded_line(
             cursor, docu, year, month, serial, line,
             "021500090", 0, 0, 0, 0,
-            f"FOC Dep.: Municipality Tax for {transaction_date}"
+            f"FOC Dep.: Municipality Tax for {invoice_date}"
         )
         line += 1
 
@@ -364,7 +375,7 @@ class NazeelComsysIntegrator:
                 self._insert_fhgl_tx_ded_line(
                     cursor, docu, year, month, serial, line,
                     account, amount, 0, amount, 0,
-                    f"FOC Dep.: {description} for {transaction_date}"
+                    f"FOC Dep.: {description} for {invoice_date}"
                 )
                 line += 1
             else:
@@ -372,12 +383,12 @@ class NazeelComsysIntegrator:
                 logging.warning(f"Creating entry for unknown payment method ID: {method_id}, amount: {amount:.2f}")
                 self._insert_fhgl_tx_ded_line(
                     cursor, docu, year, month, serial, line,
-                    "011200999", amount, 0, amount, 0,  # Generic unknown payment method account
-                    f"FOC Dep.: Unknown Payment Method {method_id} for {transaction_date}"
+                    "011200999", amount, 0, amount, 0,
+                    f"FOC Dep.: Unknown Payment Method {method_id} for {invoice_date}"
                 )
                 line += 1
 
-        logging.info(f"Inserted {line - 1} {DED_TABLE} records with balanced debits/credits")
+        logging.info(f"Inserted {line - 1} {DED_TABLE} records with balanced debits/credits for {invoice_date}")
 
     def _insert_fhgl_tx_ded_line(self, cursor, docu: str, year: str, month: str, serial: int,
                                  line: int, account: str, valu_le_dr: float, valu_le_cr: float,
@@ -386,8 +397,8 @@ class NazeelComsysIntegrator:
         row_guid = str(uuid.uuid4()).upper()
         desc_truncated = desc[:40] if len(desc) > 40 else desc.replace("'", "''")
         sql = f"""
-        INSERT INTO {DED_TABLE} (Docu, Year, Month, Serial, Line, Account, ValuLeDr, ValuLeCr, ValuFcDr, ValuFcCr, [Desc], rowguid)
-        VALUES ('{docu}', '{year}', '{month}', {serial}, {line}, '{account}', {valu_le_dr}, {valu_le_cr}, {valu_fc_dr}, {valu_fc_cr}, '{desc_truncated}', '{row_guid}')
+        INSERT INTO {DED_TABLE} (Docu, Year, Month, Serial, Line, Account, ValuLeDr, ValuLeCr, ValuFcDr, ValuFcCr, [Desc])
+        VALUES ('{docu}', '{year}', '{month}', {serial}, {line}, '{account}', {valu_le_dr}, {valu_le_cr}, {valu_fc_dr}, {valu_fc_cr}, '{desc_truncated}')
         """
         cursor.execute(sql)
         logging.debug(f"Inserted {DED_TABLE} line {line}: {account} - Dr:{valu_le_dr}, Cr:{valu_le_cr}")
@@ -414,13 +425,61 @@ class NazeelComsysIntegrator:
                 logging.warning(f"Invoice {invoice_number} already exists in processed table")
         logging.info(f"Inserted {len(paid_invoices)} invoices into tracking table")
 
+    def process_single_day_invoices(self, conn, invoice_date: date, day_invoices: List[Dict],
+                                    all_receipts: List[Dict]) -> bool:
+        """Process invoices for a single day"""
+        try:
+            logging.info(f"Processing {len(day_invoices)} invoices for date: {invoice_date}")
+
+            # Identify paid invoices for this day
+            paid_invoices = self.identify_paid_invoices(day_invoices, all_receipts)
+
+            if not paid_invoices:
+                logging.info(f"No fully paid invoices found for {invoice_date}")
+                return True
+
+            # Aggregate data for this day
+            aggregation = self.aggregate_data(paid_invoices)
+
+            logging.info(f"Day {invoice_date} aggregation: Individual Rate: {aggregation['individual_rate']:.2f}, "
+                         f"VAT: {aggregation['vat']:.2f}, Payment Methods: {len(aggregation['payment_methods'])}")
+
+            # Log payment method breakdown for this day
+            for method_id, amount in aggregation['payment_methods'].items():
+                method_name = \
+                PAYMENT_METHOD_ACCOUNTS.get(method_id, (f"Unknown-{method_id}", f"Unknown Method {method_id}"))[1]
+                logging.info(f"  {invoice_date} Payment Method {method_id} ({method_name}): {amount:.2f}")
+
+            conn.autocommit = False
+            try:
+                docu = self.generate_docu()
+                year, month, serial = self.insert_fhgl_tx_hed(conn, docu, invoice_date, aggregation)
+                self.insert_fhgl_tx_ded(conn, docu, year, month, serial, invoice_date, aggregation)
+                self.insert_processed_invoices(conn, docu, paid_invoices)
+                conn.commit()
+
+                logging.info(f"Successfully processed {len(paid_invoices)} invoices for {invoice_date}")
+                logging.info(
+                    f"  Total SubTotal: {aggregation['individual_rate']:.2f}, Total VAT: {aggregation['vat']:.2f}")
+                return True
+
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"Database transaction failed for {invoice_date}: {str(e)}")
+                return False
+
+        except Exception as e:
+            logging.error(f"Processing failed for {invoice_date}: {str(e)}")
+            return False
+
     def process_daily_data(self) -> bool:
-        """Process data for the date range (30 days lookback)"""
+        """Process data for the date range with daily segregation"""
         try:
             logging.info(f"Processing data for date range: {self.start_date} to {self.end_date}")
             logging.info(
                 f"This covers the last {(self.end_date - self.start_date).days + 1} days to catch late payments")
 
+            # Fetch all data for the date range
             invoices = self.fetch_invoices()
             receipts = self.fetch_receipts()
 
@@ -428,44 +487,50 @@ class NazeelComsysIntegrator:
                 logging.warning("No data retrieved from API")
                 return False
 
-            paid_invoices = self.identify_paid_invoices(invoices, receipts)
+            # Group invoices by their invoice date
+            grouped_invoices = self.group_invoices_by_date(invoices)
 
-            if not paid_invoices:
-                logging.info("No new fully paid invoices found")
+            if not grouped_invoices:
+                logging.info("No invoices to process after grouping")
                 return True
 
-            aggregation = self.aggregate_data(paid_invoices)
+            total_processed_days = 0
+            total_processed_invoices = 0
+            failed_days = 0
 
             with pyodbc.connect(CONNECTION_STRING) as conn:
-                conn.autocommit = False
-                try:
-                    docu = self.generate_docu()
-                    year, month, serial = self.insert_fhgl_tx_hed(conn, docu, aggregation)
-                    self.insert_fhgl_tx_ded(conn, docu, year, month, serial, aggregation)
-                    self.insert_processed_invoices(conn, docu, paid_invoices)
-                    conn.commit()
+                # Process each day's invoices separately
+                for invoice_date, day_invoices in grouped_invoices.items():
+                    success = self.process_single_day_invoices(conn, invoice_date, day_invoices, receipts)
 
-                    logging.info(f"Successfully processed {len(paid_invoices)} invoices")
-                    logging.info(
-                        f"Total SubTotal: {aggregation['individual_rate']:.2f}, Total VAT: {aggregation['vat']:.2f}")
-                    logging.info(f"Date range processed: {self.start_date} to {self.end_date}")
-                    return True
+                    if success:
+                        total_processed_days += 1
+                        # Count only the invoices that were actually processed (paid)
+                        paid_count = len(self.identify_paid_invoices(day_invoices, receipts))
+                        total_processed_invoices += paid_count
+                    else:
+                        failed_days += 1
+                        logging.error(f"Failed to process invoices for date: {invoice_date}")
 
-                except Exception as e:
-                    conn.rollback()
-                    logging.error(f"Database transaction failed: {str(e)}")
-                    return False
+            # Final summary
+            logging.info(f"=== PROCESSING SUMMARY ===")
+            logging.info(f"Date range processed: {self.start_date} to {self.end_date}")
+            logging.info(f"Total invoice dates processed: {total_processed_days}/{len(grouped_invoices)}")
+            logging.info(f"Total invoices processed: {total_processed_invoices}")
+            logging.info(f"Failed invoice dates: {failed_days}")
+
+            return failed_days == 0
 
         except Exception as e:
-            logging.error(f"Processing failed: {str(e)}")
+            logging.error(f"Overall processing failed: {str(e)}")
             return False
 
 
 def main():
     """Main entry point"""
     import argparse
-    parser = argparse.ArgumentParser(description='Nazeel to Comsys Integration')
-    parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD), default: 30 days ago')
+    parser = argparse.ArgumentParser(description='Nazeel to Comsys Integration - Daily Segregated Processing')
+    parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD), default: 60 days ago')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD), default: today')
     args = parser.parse_args()
 
@@ -473,9 +538,9 @@ def main():
         start_date = datetime.strptime(args.start_date, '%Y-%m-%d').date()
         end_date = datetime.strptime(args.end_date, '%Y-%m-%d').date()
     else:
-        # Default: last 30 days through today
+        # Default: last 60 days through today
         today = date.today()
-        start_date = today - timedelta(days=30)
+        start_date = today - timedelta(days=60)
         end_date = today
 
     logging.info(f"Date range: {start_date} to {end_date} ({(end_date - start_date).days + 1} days)")
