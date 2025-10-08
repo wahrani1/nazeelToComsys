@@ -395,7 +395,7 @@ class NazeelComsysIntegrator:
         }
 
         for invoice in paid_invoices:
-            invoice_vat = 0
+            invoice_vat = float(invoice.get('vatAmount', 0))
             invoice_subtotal = 0
             invoice_municipality_tax = 0
             invoice_penalties = 0
@@ -403,27 +403,23 @@ class NazeelComsysIntegrator:
             # Use invoice item details if available
             if invoice.get('invoicesItemsDetalis'):
                 for item in invoice.get('invoicesItemsDetalis', []):
-                    item_subtotal = float(item.get('subTotal', 0))
-                    item_vat = float(item.get('vatTaxCalculatedTotal', 0))
-                    item_total = float(item.get('total', 0))
+                    item_price = float(item.get('price', 0))
 
                     # Check for municipality tax (Lodging Fees, itemType: 4 or type: Fee--رسم)
                     if item.get('itemType') == 4 or item.get('type', '').startswith('Fee--'):
-                        invoice_municipality_tax += item_total  # Use total
+                        invoice_municipality_tax += item_price  # Use price
                     # Check for penalties (itemType: 3)
                     elif item.get('itemType') == 3:
-                        invoice_penalties += item_total  # Use total
-                    else:
-                        invoice_subtotal += item_subtotal
-                    invoice_vat += item_vat
-            else:
-                # Fallback to invoice-level fields
-                total_amount = float(invoice.get('totalAmount', 0))
-                invoice_vat = float(invoice.get('vatAmount', 0))
-                invoice_subtotal = total_amount - invoice_vat
+                        invoice_penalties += item_price  # Use price
+                    # Check for rental amount (itemType: 1)
+                    elif item.get('itemType') == 1:
+                        invoice_subtotal += item_price  # Use price
+
+            # Use vatAmount directly, if non-zero
+            if invoice_vat > 0:
+                aggregation['vat'] += invoice_vat
 
             aggregation['individual_rate'] += invoice_subtotal
-            aggregation['vat'] += invoice_vat
             aggregation['municipality_tax'] += invoice_municipality_tax
             aggregation['penalties'] += invoice_penalties
 
@@ -721,7 +717,7 @@ class NazeelComsysIntegrator:
                     f"Successfully processed {len(paid_invoices)} invoices for revenue date {revenue_date}"
                 )
                 logging.info(
-                    f"  Total SubTotal: {aggregation['individual_rate']:.2f}, "
+                    f"  Total Individual Rate: {aggregation['individual_rate']:.2f}, "
                     f"Total VAT: {aggregation['vat']:.2f}, "
                     f"Total Municipality Tax: {aggregation['municipality_tax']:.2f}, "
                     f"Total Penalties: {aggregation['penalties']:.2f}"
