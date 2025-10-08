@@ -5,6 +5,8 @@ Enhanced to process invoices by date - creates separate records for each day's i
 Fetches invoice and receipt voucher data from Nazeel API and inserts into Comsys database
 """
 
+
+
 import requests
 import pyodbc
 import hashlib
