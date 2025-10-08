@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Nazeel API to Comsys Database Integration Script
+Enhanced to process invoices by date - creates separate records for each day's invoices
+Fetches invoice and receipt voucher data from Nazeel API and inserts into Comsys database
+"""
 
 import requests
 import pyodbc
@@ -13,11 +18,11 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 # Configuration
-API_KEY = "tgh1QayxXvoXL8vnpQ5SOAZeR0ZeR0"
+API_KEY = "1kTT0EteHZcXL8vnpQ5SOAZeR0ZeR0"
 SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AlndalusLuxery1;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\P03122\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AlndalusLuxery2;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\P03123\nazeel_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
@@ -565,7 +570,7 @@ class NazeelComsysIntegrator:
                 )
                 logging.info(
                     f"Added Cash Over & Short CREDIT of {abs(difference):.2f} SAR "
-                    f"for revenue date {revenue_date}"
+                    f"for revenue_date {revenue_date}"
                 )
             line += 1
 
@@ -710,7 +715,8 @@ class NazeelComsysIntegrator:
 
             logging.info(f"API fetch range: {api_start_str} to {api_end_str}")
             logging.info(f"Revenue date processing range: {revenue_start_str} to {revenue_end_str}")
-            logging.info("Using revenue date assignment: Before 12:00 PM → Previous day, At/After 12:00 PM → Same day")
+            logging.info(
+                "Using revenue date assignment: Before 12:00 PM -> Previous day, At/After 12:00 PM -> Same day")
 
             # Fetch all data for the date range
             invoices = self.fetch_invoices()
