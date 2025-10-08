@@ -73,10 +73,10 @@ class NazeelComsysIntegrator:
         """
         Initialize integrator with date range.
         Script should run daily at 12:00 PM on day D.
-        Processes invoices from D-60 12:00:00 to D 12:00:00 for 60-day lookback.
+        Processes invoices from D-90 12:00:00 to D 12:00:00 for 90-day lookback.
 
         IMPORTANT: API fetch starts from (D-61) 12:00:00 to capture invoices created before 12:00 PM
-        on D-60 that should be assigned to revenue date D-61.
+        on D-90 that should be assigned to revenue date D-61.
         """
         if start_date and end_date:
             self.start_date = start_date
@@ -85,12 +85,12 @@ class NazeelComsysIntegrator:
             self.api_fetch_start = start_date - timedelta(days=1)
             self.api_fetch_end = end_date
         else:
-            # Default: 60-day lookback from current date at 12:00 PM
+            # Default: 90-day lookback from current date at 12:00 PM
             now = datetime.now()
             self.current_run_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
             self.end_date = self.current_run_time
-            self.start_date = self.current_run_time - timedelta(days=60)
-            # Fetch from one day earlier to capture all invoices for the 60-day revenue period
+            self.start_date = self.current_run_time - timedelta(days=90)
+            # Fetch from one day earlier to capture all invoices for the 90-day revenue period
             self.api_fetch_start = self.start_date - timedelta(days=1)
             self.api_fetch_end = self.end_date
 
@@ -782,7 +782,7 @@ def main():
     parser.add_argument(
         '--start-date',
         type=str,
-        help='Start date with time (YYYY-MM-DD HH:MM:SS), default: 60 days ago at 12:00 PM'
+        help='Start date with time (YYYY-MM-DD HH:MM:SS), default: 90 days ago at 12:00 PM'
     )
     parser.add_argument(
         '--end-date',
@@ -801,10 +801,10 @@ def main():
         start_date = datetime.strptime(args.start_date, '%Y-%m-%d %H:%M:%S')
         end_date = datetime.strptime(args.end_date, '%Y-%m-%d %H:%M:%S')
     else:
-        # Default: Run as if it's 12:00 PM today, fetch last 60 days
+        # Default: Run as if it's 12:00 PM today, fetch last 90 days
         now = datetime.now()
         end_date = now.replace(hour=12, minute=0, second=0, microsecond=0)
-        start_date = end_date - timedelta(days=60)
+        start_date = end_date - timedelta(days=90)
 
     logging.info(f"Script run time: {datetime.now()}")
     logging.info(f"Date range: {start_date} to {end_date}")
