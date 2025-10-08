@@ -18,11 +18,11 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 # Configuration
-API_KEY = "1kTT0EteHZcXL8vnpQ5SOAZeR0ZeR0"
+API_KEY = "7nbLmsNHKSAXL8vnpQ5SOAZeR0ZeR0"
 SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AlndalusLuxery2;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\P03123\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=EliteAlzahbi;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\P03079\nazeel_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
@@ -62,13 +62,13 @@ PAYMENT_METHOD_ACCOUNTS = {
     10: ("011200100", "Other Electronic Payment")
 }
 
-# Setup logging
+# Setup logging with UTF-8 encoding
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
-        logging.StreamHandler()
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),  # Use UTF-8 for file
+        logging.StreamHandler()  # Console handler
     ]
 )
 
@@ -80,8 +80,8 @@ class NazeelComsysIntegrator:
         Script should run daily at 12:00 PM on day D.
         Processes invoices from D-90 12:00:00 to D 12:00:00 for 90-day lookback.
 
-        IMPORTANT: API fetch starts from (D-61) 12:00:00 to capture invoices created before 12:00 PM
-        on D-90 that should be assigned to revenue date D-61.
+        IMPORTANT: API fetch starts from (D-91) 12:00:00 to capture invoices created before 12:00 PM
+        on D-90 that should be assigned to revenue date D-91.
         """
         if start_date and end_date:
             self.start_date = start_date
@@ -260,18 +260,18 @@ class NazeelComsysIntegrator:
     def assign_revenue_date(self, creation_datetime: datetime) -> date:
         """
         Assign revenue date based on 12:00 PM cutoff:
-        - Before 12:00 PM on day D → Revenue date D-1
-        - At/After 12:00 PM on day D → Revenue date D
+        - Before 12:00 PM on day D -> Previous day
+        - At/After 12:00 PM on day D -> Same day
         """
         noon = time(12, 0, 0)
         creation_date = creation_datetime.date()
         creation_time = creation_datetime.time()
 
         if creation_time < noon:
-            # Before 12:00 PM → assign to previous day
+            # Before 12:00 PM -> assign to previous day
             revenue_date = creation_date - timedelta(days=1)
         else:
-            # At/After 12:00 PM → assign to same day
+            # At/After 12:00 PM -> assign to same day
             revenue_date = creation_date
 
         return revenue_date
@@ -390,20 +390,31 @@ class NazeelComsysIntegrator:
             'individual_rate': 0,
             'vat': 0,
             'municipality_tax': 0,
+            'penalties': 0,
             'payment_methods': {}
         }
 
         for invoice in paid_invoices:
             invoice_vat = 0
             invoice_subtotal = 0
+            invoice_municipality_tax = 0
+            invoice_penalties = 0
 
             # Use invoice item details if available
             if invoice.get('invoicesItemsDetalis'):
                 for item in invoice.get('invoicesItemsDetalis', []):
                     item_subtotal = float(item.get('subTotal', 0))
                     item_vat = float(item.get('vatTaxCalculatedTotal', 0))
+                    item_total = float(item.get('total', 0))
 
-                    invoice_subtotal += item_subtotal
+                    # Check for municipality tax (Lodging Fees, itemType: 4 or type: Fee--رسم)
+                    if item.get('itemType') == 4 or item.get('type', '').startswith('Fee--'):
+                        invoice_municipality_tax += item_total  # Use total
+                    # Check for penalties (itemType: 3)
+                    elif item.get('itemType') == 3:
+                        invoice_penalties += item_total  # Use total
+                    else:
+                        invoice_subtotal += item_subtotal
                     invoice_vat += item_vat
             else:
                 # Fallback to invoice-level fields
@@ -413,6 +424,8 @@ class NazeelComsysIntegrator:
 
             aggregation['individual_rate'] += invoice_subtotal
             aggregation['vat'] += invoice_vat
+            aggregation['municipality_tax'] += invoice_municipality_tax
+            aggregation['penalties'] += invoice_penalties
 
             # Process matching receipts for payment methods
             for receipt in invoice.get('matching_receipts', []):
@@ -422,11 +435,20 @@ class NazeelComsysIntegrator:
                     aggregation['payment_methods'][method_id] = 0
                 aggregation['payment_methods'][method_id] += amount
 
+        # Log aggregation details
+        logging.info(
+            f"Aggregation results: "
+            f"Individual Rate: {aggregation['individual_rate']:.2f}, "
+            f"VAT: {aggregation['vat']:.2f}, "
+            f"Municipality Tax: {aggregation['municipality_tax']:.2f}, "
+            f"Penalties: {aggregation['penalties']:.2f}, "
+            f"Payment Methods: {len(aggregation['payment_methods'])}"
+        )
         return aggregation
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "113"
+        return "112"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
@@ -474,10 +496,12 @@ class NazeelComsysIntegrator:
         # Round all amounts to 2 decimal places
         individual_rate = round(aggregation['individual_rate'], 2)
         vat = round(aggregation['vat'], 2)
+        municipality_tax = round(aggregation['municipality_tax'], 2)
+        penalties = round(aggregation['penalties'], 2)
         payment_methods = {k: round(v, 2) for k, v in aggregation['payment_methods'].items()}
 
         # Calculate totals for validation
-        total_credits = individual_rate + vat
+        total_credits = individual_rate + vat + municipality_tax + penalties
         total_debits = sum(payment_methods.values())
 
         # Calculate the difference
@@ -486,7 +510,9 @@ class NazeelComsysIntegrator:
         # Log the balance check
         logging.info(
             f"Balance check for revenue date {revenue_date}: "
-            f"Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={difference:.2f}"
+            f"Credits={total_credits:.2f} (Individual={individual_rate:.2f}, VAT={vat:.2f}, "
+            f"Municipality={municipality_tax:.2f}, Penalties={penalties:.2f}), "
+            f"Debits={total_debits:.2f}, Difference={difference:.2f}"
         )
 
         # Check if difference exceeds maximum allowed
@@ -519,13 +545,23 @@ class NazeelComsysIntegrator:
             )
             line += 1
 
-        # Municipality Tax (Credit - placeholder)
-        self._insert_fhgl_tx_ded_line(
-            cursor, docu, year, month, serial, line,
-            "021500090", 0, 0, 0, 0,
-            f"FOC Dep.: Municipality Tax for {revenue_date}"
-        )
-        line += 1
+        # Municipality Tax (Credit)
+        if municipality_tax > 0:
+            self._insert_fhgl_tx_ded_line(
+                cursor, docu, year, month, serial, line,
+                "021500090", 0, municipality_tax, 0, municipality_tax,
+                f"FOC Dep.: Municipality Tax for {revenue_date}"
+            )
+            line += 1
+
+        # Penalties (Credit)
+        if penalties > 0:
+            self._insert_fhgl_tx_ded_line(
+                cursor, docu, year, month, serial, line,
+                "021100040", 0, penalties, 0, penalties,
+                f"FOC Dep.: Penalties for {revenue_date}"
+            )
+            line += 1
 
         # Payment Methods (Debits)
         for method_id, amount in payment_methods.items():
@@ -659,7 +695,10 @@ class NazeelComsysIntegrator:
             logging.info(
                 f"Revenue date {revenue_date} aggregation: "
                 f"Individual Rate: {aggregation['individual_rate']:.2f}, "
-                f"VAT: {aggregation['vat']:.2f}, Payment Methods: {len(aggregation['payment_methods'])}"
+                f"VAT: {aggregation['vat']:.2f}, "
+                f"Municipality Tax: {aggregation['municipality_tax']:.2f}, "
+                f"Penalties: {aggregation['penalties']:.2f}, "
+                f"Payment Methods: {len(aggregation['payment_methods'])}"
             )
 
             # Log payment method breakdown
@@ -683,7 +722,9 @@ class NazeelComsysIntegrator:
                 )
                 logging.info(
                     f"  Total SubTotal: {aggregation['individual_rate']:.2f}, "
-                    f"Total VAT: {aggregation['vat']:.2f}"
+                    f"Total VAT: {aggregation['vat']:.2f}, "
+                    f"Total Municipality Tax: {aggregation['municipality_tax']:.2f}, "
+                    f"Total Penalties: {aggregation['penalties']:.2f}"
                 )
                 return True
 
