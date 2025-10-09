@@ -403,17 +403,17 @@ class NazeelComsysIntegrator:
             # Use invoice item details if available
             if invoice.get('invoicesItemsDetalis'):
                 for item in invoice.get('invoicesItemsDetalis', []):
-                    item_price = float(item.get('price', 0))
+                    item_subtotal = float(item.get('subTotal', 0))
 
                     # Check for municipality tax (Lodging Fees, itemType: 4 or type: Fee--رسم)
                     if item.get('itemType') == 4 or item.get('type', '').startswith('Fee--'):
-                        invoice_municipality_tax += item_price  # Use price
+                        invoice_municipality_tax += item_subtotal  # Use subTotal
                     # Check for penalties (itemType: 3)
                     elif item.get('itemType') == 3:
-                        invoice_penalties += item_price  # Use price
+                        invoice_penalties += item_subtotal  # Use subTotal
                     # Check for rental amount (itemType: 1)
                     elif item.get('itemType') == 1:
-                        invoice_subtotal += item_price  # Use price
+                        invoice_subtotal += item_subtotal  # Use subTotal
 
             # Use vatAmount directly, if non-zero
             if invoice_vat > 0:
