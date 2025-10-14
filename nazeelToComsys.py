@@ -18,20 +18,18 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
 # Configuration
-API_KEY = "7nbLmsNHKSAXL8vnpQ5SOAZeR0ZeR0"
+API_KEY = "Y6JZeR2QiUwV6YXL8vnpQ5SOAZeR0ZeR0"
 SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=EliteAlzahbi;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\P03079\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=LoluatAlmasi;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\P03081\LoluatAlmasi_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
 DED_TABLE = "FhglTxDed"
-
 # Cash Over & Short account for handling small differences
 CASH_OVER_SHORT_ACCOUNT = "505000098"
 MAX_CASH_OVER_SHORT = 10.00  # Maximum difference allowed in SAR
-
 # SQL to create processed invoices tracking table
 CREATE_PROCESSED_INVOICES_TABLE = """
 IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Processed_Invoices' AND xtype='U')
@@ -53,12 +51,12 @@ PAYMENT_METHOD_ACCOUNTS = {
     1: ("011500020", "Cash ( FO)"),
     2: ("011200065", "MADA"),
     3: ("011200060", "Payment Method 3"),
-    4: ("011200050", "Payment Method 4"),
+    4: ("011100030", "Bank Transfer"),
     5: ("011500001", "Aljazera Bank"),
     6: ("011200070", "American Express"),
     7: ("011200050", "Visa Card"),
-    8: ("011200060", "Master Card 8"),
-    9: ("011500010", "Bank Transfer"),
+    8: ("011200060", "Master Card"),
+    9: ("011200060", "Bank Transfer"),
     10: ("011200100", "Other Electronic Payment")
 }
 
@@ -444,7 +442,7 @@ class NazeelComsysIntegrator:
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "112"
+        return "108"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
