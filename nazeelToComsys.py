@@ -50,14 +50,14 @@ CREATE TABLE Processed_Invoices (
 PAYMENT_METHOD_ACCOUNTS = {
     1: ("011500020", "Cash ( FO)"),
     2: ("011200065", "MADA"),
-    3: ("011200060", "Payment Method 3"),
-    4: ("011100030", "Bank Transfer"),
-    5: ("011500001", "Aljazera Bank"),
-    6: ("011200070", "American Express"),
+    3: ("-", "Payment Method 3"),
+    4: ("011500001", "Bank Transfer"),
+    5: ("-", "Aljazera Bank"),
+    6: ("-", "American Express"),
     7: ("011200050", "Visa Card"),
     8: ("011200060", "Master Card"),
-    9: ("011200060", "Bank Transfer"),
-    10: ("011200100", "Other Electronic Payment")
+    9: ("-", " Payment Method 9"),
+    10: ("-", "Other Electronic Payment")
 }
 
 # Setup logging with UTF-8 encoding
