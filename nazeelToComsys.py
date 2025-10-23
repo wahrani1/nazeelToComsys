@@ -34,11 +34,11 @@ from collections import defaultdict
 # ============================================================================
 # Configuration
 # ============================================================================
-API_KEY = "Y6JZeR2QiUwV6YXL8vnpQ5SOAZeR0ZeR0"
+API_KEY = "QbLcg1QuqIoXL8vnpQ5SOAZeR0ZeR0"
 SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=LoluatAlmasi;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\P03081\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AswarAlandalus;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\P03139\nazeel_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
@@ -551,7 +551,7 @@ class NazeelComsysIntegrator:
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "108"
+        return "115"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
@@ -813,11 +813,27 @@ class NazeelComsysIntegrator:
 
             success_count = 0
             failed_count = 0
+            all_rejected_invoices = []
 
             with pyodbc.connect(CONNECTION_STRING) as conn:
                 for revenue_date in all_dates:
                     date_receipts = receipts_by_date.get(revenue_date, [])
                     date_invoices = invoices_by_date.get(revenue_date, [])
+
+                    # Collect rejected invoices from this date
+                    for invoice in date_invoices:
+                        status, invoice_amt, receipt_amt, reason = self.match_invoice_to_receipts(invoice,
+                                                                                                  receipt_lookup)
+                        if not status.startswith('PROCESS'):
+                            all_rejected_invoices.append({
+                                'invoice_number': invoice.get('invoiceNumber'),
+                                'reservation_number': invoice.get('reservationNumber'),
+                                'invoice_amount': invoice_amt,
+                                'receipt_amount': receipt_amt,
+                                'reason': reason,
+                                'status': status,
+                                'revenue_date': revenue_date
+                            })
 
                     success = self.process_revenue_date(
                         conn, revenue_date, date_receipts, date_invoices, receipt_lookup
@@ -828,6 +844,8 @@ class NazeelComsysIntegrator:
                     else:
                         failed_count += 1
 
+            # Calculate processed invoices count
+            processed_invoices_count = len(all_invoices) - len(all_rejected_invoices)
             logging.info(f"\n{'=' * 80}")
             logging.info(f"PROCESSING SUMMARY")
             logging.info(f"{'=' * 80}")
@@ -835,8 +853,48 @@ class NazeelComsysIntegrator:
             logging.info(f"✓ Successfully processed: {success_count}")
             if failed_count > 0:
                 logging.info(f"✗ Failed: {failed_count}")
-            logging.info(f"Total invoices: {len(all_invoices)}")
-            logging.info(f"Total receipts: {len(all_receipts)}")
+            logging.info(f"\nInvoice Statistics:")
+            logging.info(f"  Total invoices fetched: {len(all_invoices)}")
+            logging.info(f"  ✓ Processed invoices: {processed_invoices_count}")
+            logging.info(f"  ✗ Rejected invoices: {len(all_rejected_invoices)}")
+            logging.info(f"\nReceipt Statistics:")
+            logging.info(f"  Total receipts fetched: {len(all_receipts)}")
+
+            # Display rejected invoices summary
+            if all_rejected_invoices:
+                logging.info(f"\n{'=' * 80}")
+                logging.info(f"REJECTED INVOICES DETAILS ({len(all_rejected_invoices)} total)")
+                logging.info(f"{'=' * 80}")
+
+                # Group by rejection reason
+                rejected_by_reason = defaultdict(list)
+                for rejected in all_rejected_invoices:
+                    rejected_by_reason[rejected['status']].append(rejected)
+
+                for status, invoices in rejected_by_reason.items():
+                    if status == 'REJECT_NO_RECEIPT':
+                        reason_label = "No Payment Received"
+                    elif status == 'REJECT_UNDERPAID':
+                        reason_label = f"Underpaid (> {UNDERPAYMENT_TOLERANCE} SAR)"
+                    else:
+                        reason_label = status
+
+                    logging.info(f"\n{reason_label}: {len(invoices)} invoice(s)")
+                    logging.info(f"{'-' * 80}")
+
+                    for inv in invoices:
+                        logging.info(
+                            f"  Invoice: {inv['invoice_number']} | "
+                            f"Reservation: {inv['reservation_number']} | "
+                            f"Amount: {inv['invoice_amount']:.2f} SAR | "
+                            f"Received: {inv['receipt_amount']:.2f} SAR | "
+                            f"Revenue Date: {inv['revenue_date']}"
+                        )
+
+                logging.info(f"\n{'=' * 80}")
+                logging.info(f"NOTE: Rejected invoices will be automatically retried on the next run")
+                logging.info(f"      when additional payments are received.")
+
             logging.info(f"{'=' * 80}\n")
 
             return failed_count == 0
