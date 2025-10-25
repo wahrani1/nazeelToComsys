@@ -231,6 +231,7 @@ logging.basicConfig(
     ]
 )
 
+
 # ============================================================================
 # Main Integration Class
 # ============================================================================
@@ -606,9 +607,10 @@ class NazeelComsysIntegrator:
                              receipt_lookup: Dict[str, List[Dict]], refund_lookup: Dict[str, List[Dict]]) -> bool:
         """Process all transactions for a single revenue date including refunds"""
         try:
-            logging.info(f"\n{'='*80}")
+            logging.info(f"\n{'=' * 80}")
             logging.info(f"Processing Revenue Date: {revenue_date}")
-            logging.info(f"Receipts: {len(date_receipts)} | Refunds: {len(date_refunds)} | Invoices: {len(date_invoices)}")
+            logging.info(
+                f"Receipts: {len(date_receipts)} | Refunds: {len(date_refunds)} | Invoices: {len(date_invoices)}")
 
             processable_invoices = []
             cash_over_short_entries = []
@@ -691,8 +693,10 @@ class NazeelComsysIntegrator:
             staff_account_total = sum(entry['shortage'] for entry in staff_account_entries)
             guest_ledger_amount = total_receipts - total_revenue - cash_over_short_total - staff_account_total - total_refunds
 
-            logging.info(f"Receipts: {total_receipts:.2f} | Refunds: {total_refunds:.2f} | Revenue: {total_revenue:.2f}")
-            logging.info(f"Cash O/S: {cash_over_short_total:.2f} | Staff: {staff_account_total:.2f} | Guest Ledger: {guest_ledger_amount:.2f}")
+            logging.info(
+                f"Receipts: {total_receipts:.2f} | Refunds: {total_refunds:.2f} | Revenue: {total_revenue:.2f}")
+            logging.info(
+                f"Cash O/S: {cash_over_short_total:.2f} | Staff: {staff_account_total:.2f} | Guest Ledger: {guest_ledger_amount:.2f}")
 
             conn.autocommit = False
             try:
@@ -905,7 +909,8 @@ class NazeelComsysIntegrator:
             issue_datetime = receipt.get('_raw_issue_datetime')
             revenue_date = receipt.get('_revenue_date')
 
-            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S')
             revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
 
             try:
@@ -937,7 +942,8 @@ class NazeelComsysIntegrator:
             issue_datetime = refund.get('_raw_issue_datetime')
             revenue_date = refund.get('_revenue_date')
 
-            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime(
+                '%Y-%m-%d %H:%M:%S')
             revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
 
             try:
@@ -1047,9 +1053,9 @@ class NazeelComsysIntegrator:
     def process_all_data(self) -> bool:
         """Main processing function with Refund Vouchers support"""
         try:
-            logging.info(f"\n{'='*80}")
+            logging.info(f"\n{'=' * 80}")
             logging.info(f"NAZEEL TO COMSYS INTEGRATION - v2.0 WITH REFUND VOUCHERS")
-            logging.info(f"{'='*80}")
+            logging.info(f"{'=' * 80}")
             logging.info(f"Script run time: {datetime.now()}")
 
             all_invoices = self.fetch_invoices()
@@ -1067,7 +1073,8 @@ class NazeelComsysIntegrator:
             receipt_lookup = self.build_receipt_lookup(all_receipts)
             refund_lookup = self.build_refund_lookup(all_refunds)
 
-            all_dates = sorted(set(list(invoices_by_date.keys()) + list(receipts_by_date.keys()) + list(refunds_by_date.keys())))
+            all_dates = sorted(
+                set(list(invoices_by_date.keys()) + list(receipts_by_date.keys()) + list(refunds_by_date.keys())))
             logging.info(f"\n✓ Processing {len(all_dates)} revenue dates\n")
 
             success_count = 0
@@ -1089,15 +1096,15 @@ class NazeelComsysIntegrator:
                     else:
                         failed_count += 1
 
-            logging.info(f"\n{'='*80}")
+            logging.info(f"\n{'=' * 80}")
             logging.info(f"PROCESSING SUMMARY")
-            logging.info(f"{'='*80}")
+            logging.info(f"{'=' * 80}")
             logging.info(f"Total revenue dates: {len(all_dates)}")
             logging.info(f"✓ Successfully processed: {success_count}")
             if failed_count > 0:
                 logging.info(f"✗ Failed: {failed_count}")
             logging.info(f"Invoices: {len(all_invoices)} | Receipts: {len(all_receipts)} | Refunds: {len(all_refunds)}")
-            logging.info(f"{'='*80}\n")
+            logging.info(f"{'=' * 80}\n")
 
             return failed_count == 0
 
