@@ -4,7 +4,7 @@ Nazeel API to Comsys Database Integration Script - Guest Ledger System v2.0
 WITH REFUND VOUCHERS SUPPORT
 Version: 2.0 - Production Ready
 Date: 2025-10-25
-
+Auth: Mahmoud Wahrani  senior developer at QP
 Features:
 - Guest Ledger clearing account system
 - Refund vouchers support
@@ -28,11 +28,11 @@ from collections import defaultdict
 # ============================================================================
 # Configuration
 # ============================================================================
-API_KEY = ""
-SECRET_KEY = ""
+API_KEY = "Y6JZeR2QiUwV6YXL8vnpQ5SOAZeR0ZeR0"
+SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=LoluatbelateniFaqih;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\P03078\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=LoluatAlmasi;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\P03081\nazeel_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
@@ -248,7 +248,7 @@ class NazeelComsysIntegrator:
             now = datetime.now()
             self.current_run_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
             self.end_date = self.current_run_time
-            self.start_date = self.current_run_time - timedelta(days=90)
+            self.start_date = self.current_run_time - timedelta(days=100)
             self.api_fetch_start = self.start_date - timedelta(days=1)
             self.api_fetch_end = self.end_date
 
@@ -730,7 +730,7 @@ class NazeelComsysIntegrator:
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "111"
+        return "108"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
@@ -1137,7 +1137,7 @@ def main():
         else:
             now = datetime.now()
             end_date = now.replace(hour=12, minute=0, second=0, microsecond=0)
-            start_date = end_date - timedelta(days=90)
+            start_date = end_date - timedelta(days=100)
 
         integrator = NazeelComsysIntegrator(start_date, end_date)
         success = integrator.process_all_data()
