@@ -231,7 +231,6 @@ logging.basicConfig(
     ]
 )
 
-
 # ============================================================================
 # Main Integration Class
 # ============================================================================
@@ -607,10 +606,9 @@ class NazeelComsysIntegrator:
                              receipt_lookup: Dict[str, List[Dict]], refund_lookup: Dict[str, List[Dict]]) -> bool:
         """Process all transactions for a single revenue date including refunds"""
         try:
-            logging.info(f"\n{'=' * 80}")
+            logging.info(f"\n{'='*80}")
             logging.info(f"Processing Revenue Date: {revenue_date}")
-            logging.info(
-                f"Receipts: {len(date_receipts)} | Refunds: {len(date_refunds)} | Invoices: {len(date_invoices)}")
+            logging.info(f"Receipts: {len(date_receipts)} | Refunds: {len(date_refunds)} | Invoices: {len(date_invoices)}")
 
             processable_invoices = []
             cash_over_short_entries = []
@@ -693,10 +691,8 @@ class NazeelComsysIntegrator:
             staff_account_total = sum(entry['shortage'] for entry in staff_account_entries)
             guest_ledger_amount = total_receipts - total_revenue - cash_over_short_total - staff_account_total - total_refunds
 
-            logging.info(
-                f"Receipts: {total_receipts:.2f} | Refunds: {total_refunds:.2f} | Revenue: {total_revenue:.2f}")
-            logging.info(
-                f"Cash O/S: {cash_over_short_total:.2f} | Staff: {staff_account_total:.2f} | Guest Ledger: {guest_ledger_amount:.2f}")
+            logging.info(f"Receipts: {total_receipts:.2f} | Refunds: {total_refunds:.2f} | Revenue: {total_revenue:.2f}")
+            logging.info(f"Cash O/S: {cash_over_short_total:.2f} | Staff: {staff_account_total:.2f} | Guest Ledger: {guest_ledger_amount:.2f}")
 
             conn.autocommit = False
             try:
@@ -776,16 +772,40 @@ class NazeelComsysIntegrator:
         staff_account = round(staff_account, 2)
         guest_ledger = round(guest_ledger, 2)
 
-        # Debit: Payment Methods
-        for method_id, amount in payment_methods.items():
-            if amount > 0 and method_id in PAYMENT_METHOD_ACCOUNTS:
+        # Consolidate payment methods: net payment minus refund for same method
+        # This prevents duplicate account entries in the same voucher
+        net_payment_methods = {}
+        all_method_ids = set(payment_methods.keys()) | set(refund_methods.keys())
+
+        for method_id in all_method_ids:
+            payment_amt = payment_methods.get(method_id, 0)
+            refund_amt = refund_methods.get(method_id, 0)
+            net_amount = payment_amt - refund_amt
+
+            if abs(net_amount) > 0.01:  # Only include if net is meaningful
+                net_payment_methods[method_id] = net_amount
+
+        # Process net payment methods
+        for method_id, net_amount in net_payment_methods.items():
+            if method_id in PAYMENT_METHOD_ACCOUNTS:
                 account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
-                self._insert_ded_line(
-                    cursor, docu, year, month, serial, line,
-                    account, amount, 0, amount, 0,
-                    f"FOC Dep.: {description} for {revenue_date}"
-                )
-                line += 1
+
+                if net_amount > 0:
+                    # Net debit (more payments than refunds)
+                    self._insert_ded_line(
+                        cursor, docu, year, month, serial, line,
+                        account, net_amount, 0, net_amount, 0,
+                        f"FOC Dep.: {description} for {revenue_date}"
+                    )
+                    line += 1
+                elif net_amount < 0:
+                    # Net credit (more refunds than payments)
+                    self._insert_ded_line(
+                        cursor, docu, year, month, serial, line,
+                        account, 0, abs(net_amount), 0, abs(net_amount),
+                        f"FOC Dep.: Refund {description} for {revenue_date}"
+                    )
+                    line += 1
 
         # Debit: Staff Account
         if staff_account > 0:
@@ -841,17 +861,6 @@ class NazeelComsysIntegrator:
                 f"FOC Dep.: Penalties for {revenue_date}"
             )
             line += 1
-
-        # Credit: Refund Methods
-        for method_id, amount in refund_methods.items():
-            if amount > 0 and method_id in PAYMENT_METHOD_ACCOUNTS:
-                account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
-                self._insert_ded_line(
-                    cursor, docu, year, month, serial, line,
-                    account, 0, amount, 0, amount,
-                    f"FOC Dep.: Refund {description} for {revenue_date}"
-                )
-                line += 1
 
         # Cash Over/Short
         if abs(cash_over_short) > 0:
@@ -909,8 +918,7 @@ class NazeelComsysIntegrator:
             issue_datetime = receipt.get('_raw_issue_datetime')
             revenue_date = receipt.get('_revenue_date')
 
-            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S')
+            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
 
             try:
@@ -942,8 +950,7 @@ class NazeelComsysIntegrator:
             issue_datetime = refund.get('_raw_issue_datetime')
             revenue_date = refund.get('_revenue_date')
 
-            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime(
-                '%Y-%m-%d %H:%M:%S')
+            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
 
             try:
@@ -1053,9 +1060,9 @@ class NazeelComsysIntegrator:
     def process_all_data(self) -> bool:
         """Main processing function with Refund Vouchers support"""
         try:
-            logging.info(f"\n{'=' * 80}")
+            logging.info(f"\n{'='*80}")
             logging.info(f"NAZEEL TO COMSYS INTEGRATION - v2.0 WITH REFUND VOUCHERS")
-            logging.info(f"{'=' * 80}")
+            logging.info(f"{'='*80}")
             logging.info(f"Script run time: {datetime.now()}")
 
             all_invoices = self.fetch_invoices()
@@ -1073,8 +1080,7 @@ class NazeelComsysIntegrator:
             receipt_lookup = self.build_receipt_lookup(all_receipts)
             refund_lookup = self.build_refund_lookup(all_refunds)
 
-            all_dates = sorted(
-                set(list(invoices_by_date.keys()) + list(receipts_by_date.keys()) + list(refunds_by_date.keys())))
+            all_dates = sorted(set(list(invoices_by_date.keys()) + list(receipts_by_date.keys()) + list(refunds_by_date.keys())))
             logging.info(f"\n✓ Processing {len(all_dates)} revenue dates\n")
 
             success_count = 0
@@ -1096,15 +1102,15 @@ class NazeelComsysIntegrator:
                     else:
                         failed_count += 1
 
-            logging.info(f"\n{'=' * 80}")
+            logging.info(f"\n{'='*80}")
             logging.info(f"PROCESSING SUMMARY")
-            logging.info(f"{'=' * 80}")
+            logging.info(f"{'='*80}")
             logging.info(f"Total revenue dates: {len(all_dates)}")
             logging.info(f"✓ Successfully processed: {success_count}")
             if failed_count > 0:
                 logging.info(f"✗ Failed: {failed_count}")
             logging.info(f"Invoices: {len(all_invoices)} | Receipts: {len(all_receipts)} | Refunds: {len(all_refunds)}")
-            logging.info(f"{'=' * 80}\n")
+            logging.info(f"{'='*80}\n")
 
             return failed_count == 0
 
