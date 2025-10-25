@@ -2,11 +2,12 @@
 """
 Nazeel API to Comsys Database Integration Script - Guest Ledger System
 Version: 2.0 - Production Ready
-Author: Integration Team
+Author: Quality Point Team
+Senior: Mahmoud Wahrani Software Engineer
 Date: 2025-10-22
 
 Description:
-    Implements revenue recognition with Guest Ledger clearing account.
+    Implements revenue recognition with a Guest Ledger clearing account.
     Processes invoices and receipts with multi-day matching and tolerance rules.
 
 Usage:
