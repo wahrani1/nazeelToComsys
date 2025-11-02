@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Nazeel API to Comsys Database Integration Script - Guest Ledger System v2.0
+Nazeel API to Comsys Database Integration Script - Guest Ledger System v2.1
 WITH REFUND VOUCHERS SUPPORT
-Version: 2.0 - Production Ready
-Date: 2025-10-25
+Version: 2.1 - Production Ready (12PM Cutoff Removed)
+Date: 2025-11-02
 Auth: Mahmoud Wahrani  senior developer at QP
 Features:
 - Guest Ledger clearing account system
 - Refund vouchers support
 - Staff Account for uncollected amounts
-- 12PM revenue date cutoff (invoices, receipts, refunds)
+- Transaction date assignment (no time cutoff)
 - Multi-day receipt accumulation
 - Payment matching with tolerance rules
 """
@@ -28,8 +28,8 @@ from collections import defaultdict
 # ============================================================================
 # Configuration
 # ============================================================================
-API_KEY = "Y6JZeR2QiUwV6YXL8vnpQ5SOAZeR0ZeR0"
-SECRET_KEY = "981fccc0-819e-4aa8-87d4-343c3c42c44a"
+API_KEY = ""
+SECRET_KEY = ""
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
 CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=LoluatAlmasi;Trusted_Connection=yes;"
 LOG_FILE = r"C:\Scripts\P03081\nazeel_log.txt"
@@ -242,14 +242,14 @@ class NazeelComsysIntegrator:
         if start_date and end_date:
             self.start_date = start_date
             self.end_date = end_date
-            self.api_fetch_start = start_date - timedelta(days=1)
+            self.api_fetch_start = start_date
             self.api_fetch_end = end_date
         else:
             now = datetime.now()
             self.current_run_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
             self.end_date = self.current_run_time
-            self.start_date = self.current_run_time - timedelta(days=100)
-            self.api_fetch_start = self.start_date - timedelta(days=1)
+            self.start_date = self.current_run_time - timedelta(days=90)
+            self.api_fetch_start = self.start_date
             self.api_fetch_end = self.end_date
 
         self.current_date = date.today()
@@ -395,17 +395,8 @@ class NazeelComsysIntegrator:
             return None
 
     def assign_revenue_date(self, transaction_datetime: datetime) -> date:
-        """Assign revenue date based on 12:00 PM cutoff"""
-        noon = time(12, 0, 0)
-        transaction_date = transaction_datetime.date()
-        transaction_time = transaction_datetime.time()
-
-        if transaction_time < noon:
-            revenue_date = transaction_date - timedelta(days=1)
-        else:
-            revenue_date = transaction_date
-
-        return revenue_date
+        """Assign revenue date - uses transaction date as-is (no cutoff)"""
+        return transaction_datetime.date()
 
     def fetch_invoices(self) -> List[Dict]:
         """Fetch invoices from API and filter out processed ones"""
@@ -776,40 +767,16 @@ class NazeelComsysIntegrator:
         staff_account = round(staff_account, 2)
         guest_ledger = round(guest_ledger, 2)
 
-        # Consolidate payment methods: net payment minus refund for same method
-        # This prevents duplicate account entries in the same voucher
-        net_payment_methods = {}
-        all_method_ids = set(payment_methods.keys()) | set(refund_methods.keys())
-
-        for method_id in all_method_ids:
-            payment_amt = payment_methods.get(method_id, 0)
-            refund_amt = refund_methods.get(method_id, 0)
-            net_amount = payment_amt - refund_amt
-
-            if abs(net_amount) > 0.01:  # Only include if net is meaningful
-                net_payment_methods[method_id] = net_amount
-
-        # Process net payment methods
-        for method_id, net_amount in net_payment_methods.items():
-            if method_id in PAYMENT_METHOD_ACCOUNTS:
+        # Debit: Payment Methods
+        for method_id, amount in payment_methods.items():
+            if amount > 0 and method_id in PAYMENT_METHOD_ACCOUNTS:
                 account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
-
-                if net_amount > 0:
-                    # Net debit (more payments than refunds)
-                    self._insert_ded_line(
-                        cursor, docu, year, month, serial, line,
-                        account, net_amount, 0, net_amount, 0,
-                        f"FOC Dep.: {description} for {revenue_date}"
-                    )
-                    line += 1
-                elif net_amount < 0:
-                    # Net credit (more refunds than payments)
-                    self._insert_ded_line(
-                        cursor, docu, year, month, serial, line,
-                        account, 0, abs(net_amount), 0, abs(net_amount),
-                        f"FOC Dep.: Refund {description} for {revenue_date}"
-                    )
-                    line += 1
+                self._insert_ded_line(
+                    cursor, docu, year, month, serial, line,
+                    account, amount, 0, amount, 0,
+                    f"FOC Dep.: {description} for {revenue_date}"
+                )
+                line += 1
 
         # Debit: Staff Account
         if staff_account > 0:
@@ -865,6 +832,17 @@ class NazeelComsysIntegrator:
                 f"FOC Dep.: Penalties for {revenue_date}"
             )
             line += 1
+
+        # Credit: Refund Methods
+        for method_id, amount in refund_methods.items():
+            if amount > 0 and method_id in PAYMENT_METHOD_ACCOUNTS:
+                account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
+                self._insert_ded_line(
+                    cursor, docu, year, month, serial, line,
+                    account, 0, amount, 0, amount,
+                    f"FOC Dep.: Refund {description} for {revenue_date}"
+                )
+                line += 1
 
         # Cash Over/Short
         if abs(cash_over_short) > 0:
@@ -1067,7 +1045,7 @@ class NazeelComsysIntegrator:
         """Main processing function with Refund Vouchers support"""
         try:
             logging.info(f"\n{'=' * 80}")
-            logging.info(f"NAZEEL TO COMSYS INTEGRATION - v2.0 WITH REFUND VOUCHERS")
+            logging.info(f"NAZEEL TO COMSYS INTEGRATION - v2.1 (NO TIME CUTOFF)")
             logging.info(f"{'=' * 80}")
             logging.info(f"Script run time: {datetime.now()}")
 
@@ -1132,7 +1110,7 @@ def main():
     """Main entry point"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='Nazeel to Comsys Integration v2.0')
+    parser = argparse.ArgumentParser(description='Nazeel to Comsys Integration v2.1')
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD HH:MM:SS)')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD HH:MM:SS)')
     parser.add_argument('--days', type=int, help='Days to look back')
@@ -1150,7 +1128,7 @@ def main():
         else:
             now = datetime.now()
             end_date = now.replace(hour=12, minute=0, second=0, microsecond=0)
-            start_date = end_date - timedelta(days=100)
+            start_date = end_date - timedelta(days=90)
 
         integrator = NazeelComsysIntegrator(start_date, end_date)
         success = integrator.process_all_data()
