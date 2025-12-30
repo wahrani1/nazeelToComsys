@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-Nazeel API to Comsys Database Integration Script - Guest Ledger System v2.0
-WITH REFUND VOUCHERS SUPPORT
-Version: 2.0 - Production Ready
-Date: 2025-10-25
-Auth: Mahmoud Wahrani  senior developer at QP
-Features:
-- Guest Ledger clearing account system
-- Refund vouchers support
-- Staff Account for uncollected amounts
-- 12PM revenue date cutoff (invoices, receipts, refunds)
-- Multi-day receipt accumulation
-- Payment matching with tolerance rules
-"""
 
 import requests
 import pyodbc
@@ -31,8 +17,8 @@ from collections import defaultdict
 API_KEY = ""
 SECRET_KEY = ""
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AswarAlandalus;Trusted_Connection=yes;"
-LOG_FILE = r"C:\Scripts\P03139\nazeel_log.txt"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AlndalusLuxery1;Trusted_Connection=yes;"
+LOG_FILE = r"C:\Scripts\P03122\nazeel_log.txt"
 
 # Table names
 HED_TABLE = "FhglTxHed"
@@ -45,30 +31,9 @@ MUNICIPALITY_TAX_ACCOUNT = "021500090"
 PENALTIES_ACCOUNT = "021100040"
 GUEST_LEDGER_ACCOUNT = "011200010"
 CASH_OVER_SHORT_ACCOUNT = "505000098"
-STAFF_ACCOUNT = "011500070"
+MAX_CASH_OVER_SHORT = 10.00  # Maximum difference allowed in SAR
 
-# Payment matching thresholds
-EXACT_MATCH_TOLERANCE = 0.01  # SAR
-UNDERPAYMENT_TOLERANCE = 10.00  # SAR
-
-# Payment method mapping
-PAYMENT_METHOD_ACCOUNTS = {
-    1: ("011500020", "Cash ( FO)"),
-    2: ("011200065", "MADA"),
-    3: ("-", "Payment Method 3"),
-    4: ("011500001", "Bank Transfer"),
-    5: ("-", "Aljazera Bank"),
-    6: ("-", "American Express"),
-    7: ("011200050", "Visa Card"),
-    8: ("011200060", "Master Card"),
-    9: ("-", " Payment Method 9"),
-    10: ("011200065", "GCCNET")
-}
-
-# ============================================================================
-# SQL Table Creation Scripts
-# ============================================================================
-
+# SQL to create processed invoices tracking table
 CREATE_PROCESSED_INVOICES_TABLE = """
 IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Processed_Invoices' AND xtype='U')
 BEGIN
@@ -231,9 +196,6 @@ logging.basicConfig(
     ]
 )
 
-# ============================================================================
-# Main Integration Class
-# ============================================================================
 
 class NazeelComsysIntegrator:
     def __init__(self, start_date=None, end_date=None):
@@ -247,8 +209,9 @@ class NazeelComsysIntegrator:
             now = datetime.now()
             self.current_run_time = now.replace(hour=12, minute=0, second=0, microsecond=0)
             self.end_date = self.current_run_time
-            self.start_date = self.current_run_time - timedelta(days=120)
-            self.api_fetch_start = self.start_date
+            self.start_date = self.current_run_time - timedelta(days=60)
+            # Fetch from one day earlier to capture all invoices for the 60-day revenue period
+            self.api_fetch_start = self.start_date - timedelta(days=1)
             self.api_fetch_end = self.end_date
 
         self.current_date = date.today()
@@ -266,43 +229,22 @@ class NazeelComsysIntegrator:
         try:
             with pyodbc.connect(CONNECTION_STRING) as conn:
                 cursor = conn.cursor()
-                
-                for statement in CREATE_PROCESSED_INVOICES_TABLE.split('\nGO\n'):
-                    if statement.strip():
-                        try:
-                            cursor.execute(statement)
-                            conn.commit()
-                        except Exception as e:
-                            logging.debug(f"Statement execution note: {str(e)}")
-                
-                for statement in CREATE_PROCESSED_RECEIPTS_TABLE.split('\nGO\n'):
-                    if statement.strip():
-                        try:
-                            cursor.execute(statement)
-                            conn.commit()
-                        except Exception as e:
-                            logging.debug(f"Statement execution note: {str(e)}")
-                
-                for statement in CREATE_PROCESSED_REFUNDS_TABLE.split('\nGO\n'):
-                    if statement.strip():
-                        try:
-                            cursor.execute(statement)
-                            conn.commit()
-                        except Exception as e:
-                            logging.debug(f"Statement execution note: {str(e)}")
-                
-                for statement in CREATE_STAFF_ACCOUNT_TABLE.split('\nGO\n'):
-                    if statement.strip():
-                        try:
-                            cursor.execute(statement)
-                            conn.commit()
-                        except Exception as e:
-                            logging.debug(f"Statement execution note: {str(e)}")
-                
-                logging.info("✓ Tracking tables verified/created successfully")
-                
+                cursor.execute(CREATE_PROCESSED_INVOICES_TABLE)
+
+                # Check if RawInvoiceDate column exists, add if not
+                cursor.execute("""
+                    IF NOT EXISTS (
+                        SELECT * FROM INFORMATION_SCHEMA.COLUMNS 
+                        WHERE TABLE_NAME = 'Processed_Invoices' 
+                        AND COLUMN_NAME = 'RawInvoiceDate'
+                    )
+                    ALTER TABLE Processed_Invoices ADD RawInvoiceDate DATETIME NULL
+                """)
+
+                conn.commit()
+                logging.info("Processed_Invoices table verified/created with RawInvoiceDate column")
         except Exception as e:
-            logging.error(f"Failed to ensure tracking tables: {str(e)}")
+            logging.error(f"Failed to create/verify Processed_Invoices table: {str(e)}")
             raise
 
     def _validate_journal(self, conn, docu: str) -> bool:
@@ -362,7 +304,8 @@ class NazeelComsysIntegrator:
             "Content-Type": "application/json",
             "authKey": self.auth_key
         }
-        
+
+        # Format dates for API request - use api_fetch_start to capture all needed invoices
         if isinstance(self.api_fetch_start, datetime):
             start_str = self.api_fetch_start.strftime('%Y-%m-%d %H:%M')
             end_str = self.api_fetch_end.strftime('%Y-%m-%d %H:%M')
@@ -381,7 +324,6 @@ class NazeelComsysIntegrator:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
             response.raise_for_status()
             data = response.json()
-            
             if isinstance(data, dict) and data.get('status') == 200:
                 return data.get('data', [])
             elif isinstance(data, list):
@@ -402,37 +344,27 @@ class NazeelComsysIntegrator:
         data = self._make_api_request("Getinvoices")
         if data is None:
             return []
-        
-        processed_invoices = self.get_processed_invoices()
+        if not isinstance(data, list):
+            logging.error(f"Expected list from API, got {type(data)}")
+            return []
+
         valid_invoices = []
-        
         for inv in data:
             if not isinstance(inv, dict) or inv.get('isReversed', False):
                 continue
-            
-            invoice_number = inv.get('invoiceNumber')
-            if invoice_number in processed_invoices:
-                continue
-            
+
             creation_date_str = inv.get('creationDate', '')
             if creation_date_str:
                 try:
                     creation_datetime = datetime.fromisoformat(creation_date_str.replace('Z', ''))
                     if hasattr(self, 'current_run_time') and creation_datetime > self.current_run_time:
                         continue
-                    
-                    revenue_date = self.assign_revenue_date(creation_datetime)
-                    inv['_raw_creation_datetime'] = creation_datetime
-                    inv['_revenue_date'] = revenue_date
-                    
                 except ValueError:
-                    inv['_revenue_date'] = self.current_date
-            else:
-                inv['_revenue_date'] = self.current_date
-            
+                    pass
+
             valid_invoices.append(inv)
-        
-        logging.info(f"✓ Fetched {len(valid_invoices)} new invoices")
+
+        logging.info(f"Fetched {len(valid_invoices)} valid invoices")
         return valid_invoices
 
     def fetch_receipts(self) -> List[Dict]:
@@ -440,78 +372,95 @@ class NazeelComsysIntegrator:
         data = self._make_api_request("GetReciptVouchers")
         if data is None:
             return []
-        
-        processed_receipts = self.get_processed_receipts()
-        valid_receipts = []
-        
-        for rec in data:
-            if not isinstance(rec, dict) or rec.get('isCanceled', False):
-                continue
-            
-            voucher_number = rec.get('voucherNumber')
-            if voucher_number in processed_receipts:
-                continue
-            
-            issue_date_str = rec.get('issueDateTime', '')
-            if issue_date_str:
-                try:
-                    issue_datetime = datetime.fromisoformat(issue_date_str.replace('Z', ''))
-                    revenue_date = self.assign_revenue_date(issue_datetime)
-                    rec['_raw_issue_datetime'] = issue_datetime
-                    rec['_revenue_date'] = revenue_date
-                except ValueError:
-                    rec['_revenue_date'] = self.current_date
-            else:
-                rec['_revenue_date'] = self.current_date
-            
-            valid_receipts.append(rec)
-        
-        logging.info(f"✓ Fetched {len(valid_receipts)} new receipts")
+        if not isinstance(data, list):
+            logging.error(f"Expected list from API, got {type(data)}")
+            return []
+        valid_receipts = [rec for rec in data if isinstance(rec, dict) and not rec.get('isCanceled', False)]
+        logging.info(f"Fetched {len(valid_receipts)} valid receipts")
         return valid_receipts
 
-    def fetch_refunds(self) -> List[Dict]:
-        """Fetch refund vouchers from API and filter out processed ones"""
-        data = self._make_api_request("GetRefundVouchers")
-        if data is None:
-            return []
-        
-        processed_refunds = self.get_processed_refunds()
-        valid_refunds = []
-        
-        for refund in data:
-            if not isinstance(refund, dict) or refund.get('isCanceled', False):
-                continue
-            
-            voucher_number = refund.get('voucherNumber')
-            if voucher_number in processed_refunds:
-                continue
-            
-            issue_date_str = refund.get('issueDateTime', '')
-            if issue_date_str:
-                try:
-                    issue_datetime = datetime.fromisoformat(issue_date_str.replace('Z', ''))
-                    revenue_date = self.assign_revenue_date(issue_datetime)
-                    refund['_raw_issue_datetime'] = issue_datetime
-                    refund['_revenue_date'] = revenue_date
-                except ValueError:
-                    refund['_revenue_date'] = self.current_date
-            else:
-                refund['_revenue_date'] = self.current_date
-            
-            valid_refunds.append(refund)
-        
-        logging.info(f"✓ Fetched {len(valid_refunds)} new refunds")
-        return valid_refunds
+    def assign_revenue_date(self, creation_datetime: datetime) -> date:
+        """
+        Assign revenue date based on 12:00 PM cutoff:
+        - Before 12:00 PM on day D → Revenue date D-1
+        - At/After 12:00 PM on day D → Revenue date D
+        """
+        noon = time(12, 0, 0)
+        creation_date = creation_datetime.date()
+        creation_time = creation_datetime.time()
 
-    def group_by_revenue_date(self, items: List[Dict], item_type: str) -> Dict[date, List[Dict]]:
-        """Group items by revenue date"""
-        grouped = defaultdict(list)
-        for item in items:
-            revenue_date = item.get('_revenue_date', self.current_date)
-            grouped[revenue_date].append(item)
-        
-        sorted_groups = dict(sorted(grouped.items()))
-        logging.info(f"Grouped {len(items)} {item_type} into {len(sorted_groups)} date groups")
+        if creation_time < noon:
+            # Before 12:00 PM → assign to previous day
+            revenue_date = creation_date - timedelta(days=1)
+        else:
+            # At/After 12:00 PM → assign to same day
+            revenue_date = creation_date
+
+        return revenue_date
+
+    def group_invoices_by_revenue_date(self, invoices: List[Dict]) -> Dict[date, List[Dict]]:
+        """
+        Group invoices by assigned revenue date based on creationDate.
+        Eliminates before_12/after_12 period grouping.
+        """
+        grouped_invoices = defaultdict(list)
+
+        for invoice in invoices:
+            creation_date_str = invoice.get('creationDate', '')
+
+            if creation_date_str:
+                try:
+                    # Parse the full timestamp
+                    creation_datetime = datetime.fromisoformat(creation_date_str.replace('Z', ''))
+
+                    # Assign revenue date
+                    revenue_date = self.assign_revenue_date(creation_datetime)
+
+                    # Store both raw and revenue dates in invoice for tracking
+                    invoice['_raw_creation_datetime'] = creation_datetime
+                    invoice['_revenue_date'] = revenue_date
+
+                    grouped_invoices[revenue_date].append(invoice)
+
+                    logging.debug(
+                        f"Invoice {invoice.get('invoiceNumber')}: "
+                        f"Created {creation_datetime}, Assigned to revenue date {revenue_date}"
+                    )
+
+                except ValueError as e:
+                    logging.warning(
+                        f"Could not parse creation date '{creation_date_str}' for invoice "
+                        f"{invoice.get('invoiceNumber')}: {e}. Assigning to current date."
+                    )
+                    revenue_date = self.current_date
+                    invoice['_revenue_date'] = revenue_date
+                    grouped_invoices[revenue_date].append(invoice)
+            else:
+                logging.warning(
+                    f"Invoice {invoice.get('invoiceNumber')} has no creation date, "
+                    f"assigning to revenue date {self.current_date}"
+                )
+                revenue_date = self.current_date
+                invoice['_revenue_date'] = revenue_date
+                grouped_invoices[revenue_date].append(invoice)
+
+        # Sort by revenue date for consistent processing
+        sorted_groups = dict(sorted(grouped_invoices.items()))
+
+        logging.info(f"Grouped {len(invoices)} invoices into {len(sorted_groups)} revenue date groups:")
+        for revenue_date, date_invoices in sorted_groups.items():
+            # Calculate the range of raw creation timestamps
+            raw_dates = [inv.get('_raw_creation_datetime') for inv in date_invoices if '_raw_creation_datetime' in inv]
+            if raw_dates:
+                min_raw = min(raw_dates)
+                max_raw = max(raw_dates)
+                logging.info(
+                    f"  Revenue date {revenue_date}: {len(date_invoices)} invoices "
+                    f"(created from {min_raw} to {max_raw})"
+                )
+            else:
+                logging.info(f"  Revenue date {revenue_date}: {len(date_invoices)} invoices")
+
         return sorted_groups
 
     def build_receipt_lookup(self, all_receipts: List[Dict]) -> Dict[str, List[Dict]]:
@@ -520,204 +469,83 @@ class NazeelComsysIntegrator:
         for receipt in all_receipts:
             reservation_num = receipt.get('reservationNumber')
             if reservation_num:
-                receipt_lookup[reservation_num].append(receipt)
-        return receipt_lookup
+                if reservation_num not in receipts_by_reservation:
+                    receipts_by_reservation[reservation_num] = []
+                receipts_by_reservation[reservation_num].append(receipt)
 
-    def build_refund_lookup(self, all_refunds: List[Dict]) -> Dict[str, List[Dict]]:
-        """Build lookup dictionary of refunds by reservation number"""
-        refund_lookup = defaultdict(list)
-        for refund in all_refunds:
-            reservation_num = refund.get('reservationNumber')
-            if reservation_num:
-                refund_lookup[reservation_num].append(refund)
-        return refund_lookup
+        for invoice in new_invoices:
+            reservation_num = invoice.get('reservationNumber')
+            total_amount = float(invoice.get('totalAmount', 0))
+            if reservation_num in receipts_by_reservation:
+                receipt_total = sum(
+                    float(rec.get('amount', 0))
+                    for rec in receipts_by_reservation[reservation_num]
+                )
+                if abs(receipt_total - total_amount) < 0.01:
+                    invoice['matching_receipts'] = receipts_by_reservation[reservation_num]
+                    paid_invoices.append(invoice)
+                    revenue_date = invoice.get('_revenue_date', 'N/A')
+                    raw_datetime = invoice.get('_raw_creation_datetime', 'N/A')
+                    logging.debug(
+                        f"Invoice {invoice.get('invoiceNumber')} is fully paid: "
+                        f"{receipt_total:.2f}/{total_amount:.2f}, "
+                        f"Created {raw_datetime}, Revenue date {revenue_date}"
+                    )
+                else:
+                    logging.debug(
+                        f"Invoice {invoice.get('invoiceNumber')} is partially paid: "
+                        f"{receipt_total:.2f}/{total_amount:.2f}"
+                    )
 
-    def match_invoice_to_receipts(self, invoice: Dict, receipt_lookup: Dict[str, List[Dict]], 
-                                  refund_lookup: Dict[str, List[Dict]]) -> Tuple[str, float, float, float, float, str]:
-        """Match invoice to receipts and refunds, determine processing status"""
-        reservation_num = invoice.get('reservationNumber')
-        invoice_amount = float(invoice.get('totalAmount', 0))
-        
-        receipts = receipt_lookup.get(reservation_num, [])
-        receipt_total = sum(float(r.get('amount', 0)) for r in receipts)
-        
-        refunds = refund_lookup.get(reservation_num, [])
-        refund_total = sum(abs(float(r.get('amount', 0))) for r in refunds)
-        
-        net_received = receipt_total - refund_total
-        difference = net_received - invoice_amount
-        
-        if abs(difference) <= EXACT_MATCH_TOLERANCE:
-            return ('PROCESS_EXACT', invoice_amount, receipt_total, refund_total, net_received, 'Exact match')
-        elif difference > EXACT_MATCH_TOLERANCE:
-            if refunds:
-                return ('PROCESS_OVERPAID_PARTIAL_REFUND', invoice_amount, receipt_total, refund_total, net_received,
-                       f'Overpaid by {difference:.2f} SAR (partial refund) → Cash O/S')
-            else:
-                return ('PROCESS_OVERPAID_NO_REFUND', invoice_amount, receipt_total, refund_total, net_received,
-                       f'Overpaid by {difference:.2f} SAR (no refund) → Cash O/S')
-        elif abs(difference) <= UNDERPAYMENT_TOLERANCE:
-            return ('PROCESS_UNDERPAID_SMALL', invoice_amount, receipt_total, refund_total, net_received,
-                   f'Short by {abs(difference):.2f} SAR → Cash O/S')
-        else:
-            if net_received == 0:
-                return ('PROCESS_NO_NET_PAYMENT', invoice_amount, receipt_total, refund_total, net_received,
-                       f'No net payment → Staff Account')
-            else:
-                return ('PROCESS_UNDERPAID_LARGE', invoice_amount, receipt_total, refund_total, net_received,
-                       f'Short by {abs(difference):.2f} SAR → Staff Account')
+        logging.info(
+            f"Identified {len(paid_invoices)} new fully paid invoices from "
+            f"{len(new_invoices)} total new invoices"
+        )
+        return paid_invoices
 
-    def extract_invoice_components(self, invoice: Dict) -> Dict[str, float]:
-        """Extract revenue components from invoice"""
-        components = {
-            'individual_rate': 0.0,
-            'vat': 0.0,
-            'municipality_tax': 0.0,
-            'penalties': 0.0
+    def aggregate_data(self, paid_invoices: List[Dict]) -> Dict:
+        """Aggregate data for database insertion using exact API values"""
+        aggregation = {
+            'individual_rate': 0,
+            'vat': 0,
+            'municipality_tax': 0,
+            'payment_methods': {}
         }
-        
-        components['vat'] = float(invoice.get('vatAmount', 0))
-        
-        for item in invoice.get('invoicesItemsDetalis', []):
-            item_subtotal = float(item.get('subTotal', 0))
-            item_type = item.get('itemType')
-            item_type_str = item.get('type', '')
-            
-            if item_type == 4 or item_type_str.startswith('Fee--'):
-                components['municipality_tax'] += item_subtotal
-            elif item_type == 3:
-                components['penalties'] += item_subtotal
-            elif item_type == 1:
-                components['individual_rate'] += item_subtotal
-        
-        return components
 
-    def process_revenue_date(self, conn, revenue_date: date, date_receipts: List[Dict], 
-                            date_invoices: List[Dict], date_refunds: List[Dict],
-                            receipt_lookup: Dict[str, List[Dict]], refund_lookup: Dict[str, List[Dict]]) -> bool:
-        """Process all transactions for a single revenue date including refunds"""
-        try:
-            logging.info(f"\n{'='*80}")
-            logging.info(f"Processing Revenue Date: {revenue_date}")
-            logging.info(f"Receipts: {len(date_receipts)} | Refunds: {len(date_refunds)} | Invoices: {len(date_invoices)}")
-            
-            processable_invoices = []
-            cash_over_short_entries = []
-            staff_account_entries = []
-            
-            for invoice in date_invoices:
-                status, invoice_amt, receipt_total, refund_total, net_received, reason = \
-                    self.match_invoice_to_receipts(invoice, receipt_lookup, refund_lookup)
-                
-                invoice['_match_status'] = status
-                invoice['_match_reason'] = reason
-                invoice['_receipt_amount'] = receipt_total
-                invoice['_refund_amount'] = refund_total
-                invoice['_net_received'] = net_received
-                
-                processable_invoices.append(invoice)
-                
-                difference = net_received - invoice_amt
-                
-                if abs(difference) > EXACT_MATCH_TOLERANCE:
-                    if difference > 0:
-                        cash_over_short_entries.append({
-                            'invoice_number': invoice.get('invoiceNumber'),
-                            'reservation': invoice.get('reservationNumber'),
-                            'amount': difference,
-                            'type': 'overpayment'
-                        })
-                    elif abs(difference) <= UNDERPAYMENT_TOLERANCE:
-                        cash_over_short_entries.append({
-                            'invoice_number': invoice.get('invoiceNumber'),
-                            'reservation': invoice.get('reservationNumber'),
-                            'amount': difference,
-                            'type': 'underpayment_small'
-                        })
-                    else:
-                        staff_account_entries.append({
-                            'invoice': invoice,
-                            'invoice_number': invoice.get('invoiceNumber'),
-                            'reservation': invoice.get('reservationNumber'),
-                            'guest_name': invoice.get('customerName', ''),
-                            'invoice_amount': invoice_amt,
-                            'received_amount': receipt_total,
-                            'refunded_amount': refund_total,
-                            'net_received': net_received,
-                            'shortage': abs(difference),
-                            'type': 'NO_NET_PAYMENT' if net_received == 0 else 'UNDERPAID'
-                        })
-            
-            logging.info(f"All {len(processable_invoices)} invoices will be processed")
-            
-            payment_methods = defaultdict(float)
-            for receipt in date_receipts:
+        for invoice in paid_invoices:
+            invoice_vat = 0
+            invoice_subtotal = 0
+
+            # Use invoice item details if available
+            if invoice.get('invoicesItemsDetalis'):
+                for item in invoice.get('invoicesItemsDetalis', []):
+                    item_subtotal = float(item.get('subTotal', 0))
+                    item_vat = float(item.get('vatTaxCalculatedTotal', 0))
+
+                    invoice_subtotal += item_subtotal
+                    invoice_vat += item_vat
+            else:
+                # Fallback to invoice-level fields
+                total_amount = float(invoice.get('totalAmount', 0))
+                invoice_vat = float(invoice.get('vatAmount', 0))
+                invoice_subtotal = total_amount - invoice_vat
+
+            aggregation['individual_rate'] += invoice_subtotal
+            aggregation['vat'] += invoice_vat
+
+            # Process matching receipts for payment methods
+            for receipt in invoice.get('matching_receipts', []):
                 method_id = receipt.get('paymentMethodId')
                 amount = float(receipt.get('amount', 0))
-                payment_methods[method_id] += amount
-            
-            refund_methods = defaultdict(float)
-            for refund in date_refunds:
-                method_id = refund.get('paymentMethodId')
-                amount = abs(float(refund.get('amount', 0)))
-                refund_methods[method_id] += amount
-            
-            total_receipts = sum(payment_methods.values())
-            total_refunds = sum(refund_methods.values())
-            
-            revenue_components = {
-                'individual_rate': 0.0,
-                'vat': 0.0,
-                'municipality_tax': 0.0,
-                'penalties': 0.0
-            }
-            
-            for invoice in processable_invoices:
-                components = self.extract_invoice_components(invoice)
-                for key in revenue_components:
-                    revenue_components[key] += components[key]
-            
-            total_revenue = sum(revenue_components.values())
-            cash_over_short_total = sum(entry['amount'] for entry in cash_over_short_entries)
-            staff_account_total = sum(entry['shortage'] for entry in staff_account_entries)
-            guest_ledger_amount = total_receipts - total_revenue - cash_over_short_total - staff_account_total - total_refunds
-            
-            logging.info(f"Receipts: {total_receipts:.2f} | Refunds: {total_refunds:.2f} | Revenue: {total_revenue:.2f}")
-            logging.info(f"Cash O/S: {cash_over_short_total:.2f} | Staff: {staff_account_total:.2f} | Guest Ledger: {guest_ledger_amount:.2f}")
-            
-            conn.autocommit = False
-            try:
-                docu = self.generate_docu()
-                
-                if not self._validate_journal(conn, docu):
-                    raise ValueError(f"Invalid Docu {docu}")
-                
-                year, month, serial = self.insert_fhgl_tx_hed(conn, docu, revenue_date)
-                self.insert_fhgl_tx_ded(conn, docu, year, month, serial, revenue_date,
-                                       payment_methods, refund_methods, revenue_components, 
-                                       cash_over_short_total, staff_account_total, guest_ledger_amount)
-                
-                self.insert_processed_receipts(conn, docu, year, month, serial, date_receipts)
-                self.insert_processed_refunds(conn, docu, year, month, serial, date_refunds)
-                self.insert_processed_invoices(conn, docu, year, month, serial, processable_invoices)
-                self.insert_staff_account_entries(conn, docu, year, month, serial, revenue_date, staff_account_entries)
-                
-                conn.commit()
-                logging.info(f"✓ Successfully committed transaction")
-                return True
-                
-            except Exception as e:
-                conn.rollback()
-                logging.error(f"✗ Transaction failed: {str(e)}")
-                return False
-                
-        except Exception as e:
-            logging.error(f"✗ Processing failed: {str(e)}")
-            return False
+                if method_id not in aggregation['payment_methods']:
+                    aggregation['payment_methods'][method_id] = 0
+                aggregation['payment_methods'][method_id] += amount
+
+        return aggregation
 
     def generate_docu(self) -> str:
         """Generate document number"""
-        return "115"
+        return "113"
 
     def get_next_serial(self, conn, docu: str, year: str, month: str) -> int:
         """Get the next available serial number"""
@@ -740,7 +568,8 @@ class NazeelComsysIntegrator:
         month = f"{revenue_date.month:02d}"
         serial = self.get_next_serial(conn, docu, year, month)
         date_val = revenue_date.strftime('%Y-%m-%d')
-        
+        row_guid = str(uuid.uuid4()).upper()
+
         sql = f"""
         INSERT INTO {HED_TABLE} (Docu, Year, Month, Serial, Date, Currency, Rate, Posted, ReEvaluate, RepeatedSerial, Flag)
         VALUES ('{docu}', '{year}', '{month}', {serial}, '{date_val}', '001', 1.0, 0, 0, NULL, NULL)
@@ -749,101 +578,94 @@ class NazeelComsysIntegrator:
         return year, month, serial
 
     def insert_fhgl_tx_ded(self, conn, docu: str, year: str, month: str, serial: int,
-                          revenue_date: date, payment_methods: Dict[int, float],
-                          refund_methods: Dict[int, float], revenue_components: Dict[str, float],
-                          cash_over_short: float, staff_account: float, guest_ledger: float) -> None:
-        """Insert records into FhglTxDed table with refunds support"""
+                           revenue_date: date, aggregation: Dict) -> None:
+        """Insert records into FhglTxDed table with Cash Over & Short handling"""
         cursor = conn.cursor()
         line = 1
-        
-        payment_methods = {k: round(v, 2) for k, v in payment_methods.items()}
-        refund_methods = {k: round(v, 2) for k, v in refund_methods.items()}
-        revenue_components = {k: round(v, 2) for k, v in revenue_components.items()}
-        cash_over_short = round(cash_over_short, 2)
-        staff_account = round(staff_account, 2)
-        guest_ledger = round(guest_ledger, 2)
-        
-        # Debit: Payment Methods
-        for method_id, amount in payment_methods.items():
-            if amount > 0 and method_id in PAYMENT_METHOD_ACCOUNTS:
-                account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
-                self._insert_ded_line(
-                    cursor, docu, year, month, serial, line,
-                    account, amount, 0, amount, 0,
-                    f"FOC Dep.: {description} for {revenue_date}"
-                )
-                line += 1
-        
-        # Debit: Staff Account
-        if staff_account > 0:
-            self._insert_ded_line(
-                cursor, docu, year, month, serial, line,
-                STAFF_ACCOUNT, staff_account, 0, staff_account, 0,
-                f"FOC Dep.: Staff C/L for {revenue_date}"
+
+        # Round all amounts to 2 decimal places
+        individual_rate = round(aggregation['individual_rate'], 2)
+        vat = round(aggregation['vat'], 2)
+        payment_methods = {k: round(v, 2) for k, v in aggregation['payment_methods'].items()}
+
+        # Calculate totals for validation
+        total_credits = individual_rate + vat
+        total_debits = sum(payment_methods.values())
+
+        # Calculate the difference
+        difference = round(total_credits - total_debits, 2)
+
+        # Log the balance check
+        logging.info(
+            f"Balance check for revenue date {revenue_date}: "
+            f"Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={difference:.2f}"
+        )
+
+        # Check if difference exceeds maximum allowed
+        if abs(difference) > MAX_CASH_OVER_SHORT:
+            logging.error(
+                f"CRITICAL: Debit/Credit imbalance exceeds {MAX_CASH_OVER_SHORT} SAR "
+                f"for revenue date {revenue_date}! Difference: {abs(difference):.2f}"
             )
-            line += 1
-        
-        # Debit: Guest Ledger (release prepayments)
-        if guest_ledger < 0:
-            self._insert_ded_line(
-                cursor, docu, year, month, serial, line,
-                GUEST_LEDGER_ACCOUNT, abs(guest_ledger), 0, abs(guest_ledger), 0,
-                f"FOC Dep.: Guest Ledger for {revenue_date}"
+            logging.error("This indicates partially paid invoices are being processed as fully paid!")
+            raise ValueError(
+                f"Accounting imbalance for revenue date {revenue_date}: "
+                f"Credits={total_credits:.2f}, Debits={total_debits:.2f}, Difference={abs(difference):.2f}"
             )
-            line += 1
-        
-        # Credit: Revenue Components
-        if revenue_components['individual_rate'] > 0:
-            self._insert_ded_line(
+
+        # Individual Rate (Credit)
+        if individual_rate > 0:
+            self._insert_fhgl_tx_ded_line(
                 cursor, docu, year, month, serial, line,
-                REVENUE_ACCOUNT, 0, revenue_components['individual_rate'], 
-                0, revenue_components['individual_rate'],
+                "101000020", 0, individual_rate, 0, individual_rate,
                 f"FOC Dep.: Individual Rate for {revenue_date}"
             )
             line += 1
-        
-        if revenue_components['vat'] > 0:
-            self._insert_ded_line(
+
+        # VAT (Credit)
+        if vat > 0:
+            self._insert_fhgl_tx_ded_line(
                 cursor, docu, year, month, serial, line,
                 VAT_ACCOUNT, 0, revenue_components['vat'],
                 0, revenue_components['vat'],
                 f"FOC Dep.: VAT for {revenue_date}"
             )
             line += 1
-        
-        if revenue_components['municipality_tax'] > 0:
-            self._insert_ded_line(
-                cursor, docu, year, month, serial, line,
-                MUNICIPALITY_TAX_ACCOUNT, 0, revenue_components['municipality_tax'],
-                0, revenue_components['municipality_tax'],
-                f"FOC Dep.: Municipality Tax for {revenue_date}"
-            )
-            line += 1
-        
-        if revenue_components['penalties'] > 0:
-            self._insert_ded_line(
-                cursor, docu, year, month, serial, line,
-                PENALTIES_ACCOUNT, 0, revenue_components['penalties'],
-                0, revenue_components['penalties'],
-                f"FOC Dep.: Penalties for {revenue_date}"
-            )
-            line += 1
-        
-        # Credit: Refund Methods
-        for method_id, amount in refund_methods.items():
-            if amount > 0 and method_id in PAYMENT_METHOD_ACCOUNTS:
+
+        # Municipality Tax (Credit - placeholder)
+        self._insert_fhgl_tx_ded_line(
+            cursor, docu, year, month, serial, line,
+            "021500090", 0, 0, 0, 0,
+            f"FOC Dep.: Municipality Tax for {revenue_date}"
+        )
+        line += 1
+
+        # Payment Methods (Debits)
+        for method_id, amount in payment_methods.items():
+            if method_id in PAYMENT_METHOD_ACCOUNTS:
                 account, description = PAYMENT_METHOD_ACCOUNTS[method_id]
-                self._insert_ded_line(
+                self._insert_fhgl_tx_ded_line(
+                    cursor, docu, year, month, serial, line,
+                    account, amount, 0, amount, 0,
+                    f"FOC Dep.: {description} for {revenue_date}"
+                )
+                line += 1
+            else:
+                logging.warning(
+                    f"Creating entry for unknown payment method ID: {method_id}, amount: {amount:.2f}"
+                )
+                self._insert_fhgl_tx_ded_line(
                     cursor, docu, year, month, serial, line,
                     account, 0, amount, 0, amount,
                     f"FOC Dep.: Refund {description} for {revenue_date}"
                 )
                 line += 1
-        
-        # Cash Over/Short
-        if abs(cash_over_short) > 0:
-            if cash_over_short > 0:
-                self._insert_ded_line(
+
+        # Handle Cash Over & Short if there's a difference
+        if abs(difference) > 0:
+            if difference > 0:
+                # Credits > Debits: We need to debit Cash Over & Short
+                self._insert_fhgl_tx_ded_line(
                     cursor, docu, year, month, serial, line,
                     CASH_OVER_SHORT_ACCOUNT, 0, abs(cash_over_short),
                     0, abs(cash_over_short),
@@ -857,20 +679,15 @@ class NazeelComsysIntegrator:
                     f"FOC Dep.: Cash O/S for {revenue_date}"
                 )
             line += 1
-        
-        # Credit: Guest Ledger (prepayments)
-        if guest_ledger > 0:
-            self._insert_ded_line(
-                cursor, docu, year, month, serial, line,
-                GUEST_LEDGER_ACCOUNT, 0, abs(guest_ledger),
-                0, abs(guest_ledger),
-                f"FOC Dep.: Guest Ledger for {revenue_date}"
-            )
-            line += 1
 
-    def _insert_ded_line(self, cursor, docu: str, year: str, month: str, serial: int,
-                        line: int, account: str, valu_le_dr: float, valu_le_cr: float,
-                        valu_fc_dr: float, valu_fc_cr: float, desc: str) -> None:
+        logging.info(
+            f"Inserted {line - 1} {DED_TABLE} records with balanced debits/credits "
+            f"for revenue date {revenue_date}"
+        )
+
+    def _insert_fhgl_tx_ded_line(self, cursor, docu: str, year: str, month: str, serial: int,
+                                 line: int, account: str, valu_le_dr: float, valu_le_cr: float,
+                                 valu_fc_dr: float, valu_fc_cr: float, desc: str) -> None:
         """Insert a single line into FhglTxDed table"""
         desc_truncated = desc[:40] if len(desc) > 40 else desc.replace("'", "''")
         sql = f"""
@@ -880,26 +697,23 @@ class NazeelComsysIntegrator:
         """
         cursor.execute(sql)
 
-    def insert_processed_receipts(self, conn, docu: str, year: str, month: str, 
-                                  serial: int, receipts: List[Dict]) -> None:
-        """Insert processed receipts into tracking table"""
-        if not receipts:
-            return
-        
+    def insert_processed_invoices(self, conn, docu: str, paid_invoices: List[Dict]) -> None:
+        """Insert processed invoices into tracking table with revenue date and raw creation date"""
         cursor = conn.cursor()
-        
-        for receipt in receipts:
-            voucher_num = receipt.get('voucherNumber', '').replace("'", "''")
-            reservation_num = receipt.get('reservationNumber', '').replace("'", "''")
-            amount = float(receipt.get('amount', 0))
-            payment_method_id = receipt.get('paymentMethodId', 0)
-            issue_datetime = receipt.get('_raw_issue_datetime')
-            revenue_date = receipt.get('_revenue_date')
-            
-            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
-            
-            try:
+        for invoice in paid_invoices:
+            invoice_number = invoice.get('invoiceNumber', '').replace("'", "''")
+            reservation_number = invoice.get('reservationNumber', '').replace("'", "''")
+            total_amount = float(invoice.get('totalAmount', 0))
+
+            # Use revenue date for InvoiceDate field
+            revenue_date = invoice.get('_revenue_date', self.current_date)
+            revenue_date_str = revenue_date.strftime('%Y-%m-%d')
+
+            # Store raw creation datetime for auditing
+            raw_creation_datetime = invoice.get('_raw_creation_datetime')
+            raw_datetime_str = raw_creation_datetime.strftime('%Y-%m-%d %H:%M:%S') if raw_creation_datetime else 'NULL'
+
+            if raw_creation_datetime:
                 sql = f"""
                 INSERT INTO Processed_Receipts 
                 (VoucherNumber, ReservationNumber, Amount, PaymentMethodId, IssueDateTime, RevenueDate, Docu, ComsysYear, ComsysMonth, ComsysSerial)
@@ -912,186 +726,146 @@ class NazeelComsysIntegrator:
             except Exception as e:
                 logging.warning(f"Error inserting receipt {voucher_num}: {str(e)}")
 
-    def insert_processed_refunds(self, conn, docu: str, year: str, month: str, 
-                                  serial: int, refunds: List[Dict]) -> None:
-        """Insert processed refunds into tracking table"""
-        if not refunds:
-            return
-        
-        cursor = conn.cursor()
-        
-        for refund in refunds:
-            voucher_num = refund.get('voucherNumber', '').replace("'", "''")
-            reservation_num = refund.get('reservationNumber', '').replace("'", "''")
-            amount = float(refund.get('amount', 0))
-            payment_method_id = refund.get('paymentMethodId', 0)
-            issue_datetime = refund.get('_raw_issue_datetime')
-            revenue_date = refund.get('_revenue_date')
-            
-            issue_dt_str = issue_datetime.strftime('%Y-%m-%d %H:%M:%S') if issue_datetime else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
-            
-            try:
-                sql = f"""
-                INSERT INTO Processed_Refunds 
-                (VoucherNumber, ReservationNumber, Amount, PaymentMethodId, IssueDateTime, RevenueDate, Docu, ComsysYear, ComsysMonth, ComsysSerial)
-                VALUES ('{voucher_num}', '{reservation_num}', {amount}, {payment_method_id}, 
-                        '{issue_dt_str}', '{revenue_date_str}', '{docu}', '{year}', '{month}', {serial})
-                """
-                cursor.execute(sql)
-            except pyodbc.IntegrityError:
-                pass
-            except Exception as e:
-                logging.warning(f"Error inserting refund {voucher_num}: {str(e)}")
-
-    def insert_processed_invoices(self, conn, docu: str, year: str, month: str,
-                                  serial: int, invoices: List[Dict]) -> None:
-        """Insert processed invoices into tracking table"""
-        if not invoices:
-            return
-        
-        cursor = conn.cursor()
-        
-        for invoice in invoices:
-            invoice_num = invoice.get('invoiceNumber', '').replace("'", "''")
-            reservation_num = invoice.get('reservationNumber', '').replace("'", "''")
-            total_amount = float(invoice.get('totalAmount', 0))
-            creation_datetime = invoice.get('_raw_creation_datetime')
-            revenue_date = invoice.get('_revenue_date')
-            
-            creation_dt_str = creation_datetime.strftime('%Y-%m-%d %H:%M:%S') if creation_datetime else None
-            revenue_date_str = revenue_date.strftime('%Y-%m-%d') if revenue_date else date.today().strftime('%Y-%m-%d')
-            
-            try:
-                if creation_datetime:
-                    sql = f"""
-                    INSERT INTO Processed_Invoices 
-                    (InvoiceNumber, ReservationNumber, TotalAmount, RevenueDate, RawInvoiceDate, Docu, ComsysYear, ComsysMonth, ComsysSerial)
-                    VALUES ('{invoice_num}', '{reservation_num}', {total_amount}, '{revenue_date_str}', 
-                            '{creation_dt_str}', '{docu}', '{year}', '{month}', {serial})
-                    """
-                else:
-                    sql = f"""
-                    INSERT INTO Processed_Invoices 
-                    (InvoiceNumber, ReservationNumber, TotalAmount, RevenueDate, Docu, ComsysYear, ComsysMonth, ComsysSerial)
-                    VALUES ('{invoice_num}', '{reservation_num}', {total_amount}, '{revenue_date_str}', 
-                            '{docu}', '{year}', '{month}', {serial})
-                    """
-                cursor.execute(sql)
-            except pyodbc.IntegrityError:
-                pass
-            except Exception as e:
-                logging.warning(f"Error inserting invoice {invoice_num}: {str(e)}")
-
-    def insert_staff_account_entries(self, conn, docu: str, year: str, month: str,
-                                     serial: int, revenue_date: date, staff_entries: List[Dict]) -> None:
-        """Insert Staff Account entries into tracking table"""
-        if not staff_entries:
-            return
-        
-        cursor = conn.cursor()
-        
-        for entry in staff_entries:
-            invoice_num = entry['invoice_number'].replace("'", "''")
-            reservation_num = entry['reservation'].replace("'", "''")
-            guest_name = entry['guest_name'].replace("'", "''") if entry['guest_name'] else ''
-            invoice_amount = entry['invoice_amount']
-            received_amount = entry.get('received_amount', 0)
-            refunded_amount = entry.get('refunded_amount', 0)
-            net_received = entry.get('net_received', received_amount - refunded_amount)
-            shortage = entry['shortage']
-            shortage_type = entry['type']
-            
-            revenue_date_str = revenue_date.strftime('%Y-%m-%d')
-            
-            if refunded_amount > 0:
-                notes = f"Received: {received_amount:.2f}, Refunded: {refunded_amount:.2f}, Net: {net_received:.2f}"
-                notes_escaped = notes.replace("'", "''")
-            else:
-                notes_escaped = None
-            
-            try:
-                if notes_escaped:
-                    sql = f"""
-                    INSERT INTO Staff_Account_Entries 
-                    (InvoiceNumber, ReservationNumber, GuestName, InvoiceAmount, ReceivedAmount, 
-                     ShortageAmount, ShortageType, RevenueDate, Docu, ComsysYear, ComsysMonth, ComsysSerial, Status, Notes)
-                    VALUES ('{invoice_num}', '{reservation_num}', '{guest_name}', {invoice_amount}, 
-                            {net_received}, {shortage}, '{shortage_type}', '{revenue_date_str}', 
-                            '{docu}', '{year}', '{month}', {serial}, 'PENDING', '{notes_escaped}')
-                    """
-                else:
-                    sql = f"""
-                    INSERT INTO Staff_Account_Entries 
-                    (InvoiceNumber, ReservationNumber, GuestName, InvoiceAmount, ReceivedAmount, 
-                     ShortageAmount, ShortageType, RevenueDate, Docu, ComsysYear, ComsysMonth, ComsysSerial, Status)
-                    VALUES ('{invoice_num}', '{reservation_num}', '{guest_name}', {invoice_amount}, 
-                            {net_received}, {shortage}, '{shortage_type}', '{revenue_date_str}', 
-                            '{docu}', '{year}', '{month}', {serial}, 'PENDING')
-                    """
-                cursor.execute(sql)
-            except pyodbc.IntegrityError:
-                pass
-            except Exception as e:
-                logging.warning(f"Error inserting Staff Account entry {invoice_num}: {str(e)}")
-
-    def process_all_data(self) -> bool:
-        """Main processing function with Refund Vouchers support"""
+    def process_single_revenue_date(self, conn, revenue_date: date,
+                                    date_invoices: List[Dict], all_receipts: List[Dict]) -> bool:
+        """Process invoices for a single revenue date"""
         try:
-            logging.info(f"\n{'='*80}")
-            logging.info(f"NAZEEL TO COMSYS INTEGRATION - v2.1 (NO TIME CUTOFF)")
-            logging.info(f"{'='*80}")
-            logging.info(f"Script run time: {datetime.now()}")
-            
-            all_invoices = self.fetch_invoices()
-            all_receipts = self.fetch_receipts()
-            all_refunds = self.fetch_refunds()
-            
-            if not all_invoices and not all_receipts and not all_refunds:
-                logging.warning("No new data to process")
+            # Calculate raw creation period
+            raw_dates = [inv.get('_raw_creation_datetime') for inv in date_invoices if '_raw_creation_datetime' in inv]
+            if raw_dates:
+                min_raw = min(raw_dates)
+                max_raw = max(raw_dates)
+                logging.info(
+                    f"Processing {len(date_invoices)} invoices for revenue date {revenue_date} "
+                    f"(created from {min_raw} to {max_raw})"
+                )
+            else:
+                logging.info(f"Processing {len(date_invoices)} invoices for revenue date {revenue_date}")
+
+            # Identify paid invoices
+            paid_invoices = self.identify_paid_invoices(date_invoices, all_receipts)
+
+            if not paid_invoices:
+                logging.info(f"No fully paid invoices found for revenue date {revenue_date}")
+                return True
+
+            # Aggregate data
+            aggregation = self.aggregate_data(paid_invoices)
+
+            logging.info(
+                f"Revenue date {revenue_date} aggregation: "
+                f"Individual Rate: {aggregation['individual_rate']:.2f}, "
+                f"VAT: {aggregation['vat']:.2f}, Payment Methods: {len(aggregation['payment_methods'])}"
+            )
+
+            # Log payment method breakdown
+            for method_id, amount in aggregation['payment_methods'].items():
+                method_name = PAYMENT_METHOD_ACCOUNTS.get(
+                    method_id,
+                    (f"Unknown-{method_id}", f"Unknown Method {method_id}")
+                )[1]
+                logging.info(f"  Payment Method {method_id} ({method_name}): {amount:.2f}")
+
+            conn.autocommit = False
+            try:
+                docu = self.generate_docu()
+                year, month, serial = self.insert_fhgl_tx_hed(conn, docu, revenue_date, aggregation)
+                self.insert_fhgl_tx_ded(conn, docu, year, month, serial, revenue_date, aggregation)
+                self.insert_processed_invoices(conn, docu, paid_invoices)
+                conn.commit()
+
+                logging.info(
+                    f"Successfully processed {len(paid_invoices)} invoices for revenue date {revenue_date}"
+                )
+                logging.info(
+                    f"  Total SubTotal: {aggregation['individual_rate']:.2f}, "
+                    f"Total VAT: {aggregation['vat']:.2f}"
+                )
+                return True
+
+            except Exception as e:
+                conn.rollback()
+                logging.error(f"Database transaction failed for revenue date {revenue_date}: {str(e)}")
                 return False
-            
-            invoices_by_date = self.group_by_revenue_date(all_invoices, "invoices")
-            receipts_by_date = self.group_by_revenue_date(all_receipts, "receipts")
-            refunds_by_date = self.group_by_revenue_date(all_refunds, "refunds")
-            
-            receipt_lookup = self.build_receipt_lookup(all_receipts)
-            refund_lookup = self.build_refund_lookup(all_refunds)
-            
-            all_dates = sorted(set(list(invoices_by_date.keys()) + list(receipts_by_date.keys()) + list(refunds_by_date.keys())))
-            logging.info(f"\n✓ Processing {len(all_dates)} revenue dates\n")
-            
-            success_count = 0
-            failed_count = 0
-            
+
+        except Exception as e:
+            logging.error(f"Processing failed for revenue date {revenue_date}: {str(e)}")
+            return False
+
+    def process_daily_data(self) -> bool:
+        """Process data with revenue date assignment based on 12:00 PM cutoff using creationDate"""
+        try:
+            if isinstance(self.api_fetch_start, datetime):
+                api_start_str = self.api_fetch_start.strftime('%Y-%m-%d %H:%M:%S')
+                api_end_str = self.api_fetch_end.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                api_start_str = f"{self.api_fetch_start} 12:00:00"
+                api_end_str = f"{self.api_fetch_end} 12:00:00"
+
+            if isinstance(self.start_date, datetime):
+                revenue_start_str = self.start_date.strftime('%Y-%m-%d %H:%M:%S')
+                revenue_end_str = self.end_date.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                revenue_start_str = f"{self.start_date} 12:00:00"
+                revenue_end_str = f"{self.end_date} 12:00:00"
+
+            logging.info(f"API fetch range: {api_start_str} to {api_end_str}")
+            logging.info(f"Revenue date processing range: {revenue_start_str} to {revenue_end_str}")
+            logging.info("Using revenue date assignment: Before 12:00 PM → Previous day, At/After 12:00 PM → Same day")
+
+            # Fetch all data for the date range
+            invoices = self.fetch_invoices()
+            receipts = self.fetch_receipts()
+
+            if not invoices and not receipts:
+                logging.warning("No data retrieved from API")
+                return False
+
+            # Group invoices by revenue date
+            grouped_invoices = self.group_invoices_by_revenue_date(invoices)
+
+            if not grouped_invoices:
+                logging.info("No invoices to process after grouping")
+                return True
+
+            total_processed_dates = 0
+            total_processed_invoices = 0
+            failed_dates = 0
+
             with pyodbc.connect(CONNECTION_STRING) as conn:
-                for revenue_date in all_dates:
-                    date_receipts = receipts_by_date.get(revenue_date, [])
-                    date_invoices = invoices_by_date.get(revenue_date, [])
-                    date_refunds = refunds_by_date.get(revenue_date, [])
-                    
-                    success = self.process_revenue_date(
-                        conn, revenue_date, date_receipts, date_invoices, date_refunds,
-                        receipt_lookup, refund_lookup
-                    )
-                    
+                # Process each revenue date separately
+                for revenue_date, date_invoices in grouped_invoices.items():
+                    success = self.process_single_revenue_date(conn, revenue_date, date_invoices, receipts)
+
                     if success:
                         success_count += 1
                     else:
-                        failed_count += 1
-            
-            logging.info(f"\n{'='*80}")
-            logging.info(f"PROCESSING SUMMARY")
-            logging.info(f"{'='*80}")
-            logging.info(f"Total revenue dates: {len(all_dates)}")
-            logging.info(f"✓ Successfully processed: {success_count}")
-            if failed_count > 0:
-                logging.info(f"✗ Failed: {failed_count}")
-            logging.info(f"Invoices: {len(all_invoices)} | Receipts: {len(all_receipts)} | Refunds: {len(all_refunds)}")
-            logging.info(f"{'='*80}\n")
-            
-            return failed_count == 0
-            
+                        failed_dates += 1
+                        logging.error(f"Failed to process invoices for revenue date {revenue_date}")
+
+            # Final summary
+            logging.info(f"=== PROCESSING SUMMARY ===")
+            logging.info(f"API fetch range: {api_start_str} to {api_end_str}")
+            logging.info(f"Revenue date range: {revenue_start_str} to {revenue_end_str}")
+            logging.info(f"Total revenue dates processed: {total_processed_dates}/{len(grouped_invoices)}")
+            logging.info(f"Total invoices processed: {total_processed_invoices}")
+            logging.info(f"Failed revenue dates: {failed_dates}")
+
+            # Log revenue date coverage
+            for revenue_date, date_invoices in grouped_invoices.items():
+                raw_dates = [inv.get('_raw_creation_datetime') for inv in date_invoices if
+                             '_raw_creation_datetime' in inv]
+                if raw_dates:
+                    min_raw = min(raw_dates)
+                    max_raw = max(raw_dates)
+                    paid_count = len(self.identify_paid_invoices(date_invoices, receipts))
+                    logging.info(
+                        f"Revenue date {revenue_date}: {paid_count} invoices processed "
+                        f"(created from {min_raw} to {max_raw})"
+                    )
+
+            return failed_dates == 0
+
         except Exception as e:
             logging.error(f"✗ Processing failed: {str(e)}")
             import traceback
@@ -1102,41 +876,52 @@ class NazeelComsysIntegrator:
 def main():
     """Main entry point"""
     import argparse
-    
-    parser = argparse.ArgumentParser(description='Nazeel to Comsys Integration v2.1')
-    parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD HH:MM:SS)')
-    parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD HH:MM:SS)')
-    parser.add_argument('--days', type=int, help='Days to look back')
-    
+    parser = argparse.ArgumentParser(
+        description='Nazeel to Comsys Integration - Revenue Date Assignment with 12:00 PM Cutoff using creationDate'
+    )
+    parser.add_argument(
+        '--start-date',
+        type=str,
+        help='Start date with time (YYYY-MM-DD HH:MM:SS), default: 60 days ago at 12:00 PM'
+    )
+    parser.add_argument(
+        '--end-date',
+        type=str,
+        help='End date with time (YYYY-MM-DD HH:MM:SS), default: today at 12:00 PM'
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Perform a dry run without modifying the database'
+    )
     args = parser.parse_args()
-    
-    try:
-        if args.start_date and args.end_date:
-            start_date = datetime.strptime(args.start_date, '%Y-%m-%d %H:%M:%S')
-            end_date = datetime.strptime(args.end_date, '%Y-%m-%d %H:%M:%S')
-        elif args.days:
-            now = datetime.now()
-            end_date = now.replace(hour=12, minute=0, second=0, microsecond=0)
-            start_date = end_date - timedelta(days=args.days)
-        else:
-            now = datetime.now()
-            end_date = now.replace(hour=12, minute=0, second=0, microsecond=0)
-            start_date = end_date - timedelta(days=120)
-        
-        integrator = NazeelComsysIntegrator(start_date, end_date)
-        success = integrator.process_all_data()
-        
-        if success:
-            logging.info("✓ Processing completed successfully")
-            exit(0)
-        else:
-            logging.error("✗ Processing completed with errors")
-            exit(1)
-            
-    except Exception as e:
-        logging.error(f"✗ Fatal error: {str(e)}")
-        import traceback
-        logging.error(traceback.format_exc())
+
+    if args.start_date and args.end_date:
+        # Parse datetime strings
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d %H:%M:%S')
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d %H:%M:%S')
+    else:
+        # Default: Run as if it's 12:00 PM today, fetch last 60 days
+        now = datetime.now()
+        end_date = now.replace(hour=12, minute=0, second=0, microsecond=0)
+        start_date = end_date - timedelta(days=60)
+
+    logging.info(f"Script run time: {datetime.now()}")
+    logging.info(f"Date range: {start_date} to {end_date}")
+    logging.info(f"Duration: {(end_date - start_date).days} days")
+
+    if args.dry_run:
+        logging.info("DRY RUN MODE: No database changes will be made")
+        # TODO: Implement dry-run logic if needed
+
+    integrator = NazeelComsysIntegrator(start_date, end_date)
+    success = integrator.process_daily_data()
+
+    if success:
+        logging.info("Processing completed successfully")
+        exit(0)
+    else:
+        logging.error("Processing failed")
         exit(1)
 
 
