@@ -31,7 +31,7 @@ from collections import defaultdict
 API_KEY = ""
 SECRET_KEY = ""
 BASE_URL = "https://eai.nazeel.net/api/odoo-TransactionsTransfer"
-CONNECTION_STRING = "DRIVER={SQL Server};SERVER=COMSYS-API;DATABASE=AswarAlandalus;Trusted_Connection=yes;"
+CONNECTION_STRING = "DRIVER={SQL Server};SERVER=SERVER_NAME;DATABASE=DB_NAME;Trusted_Connection=yes;"
 LOG_FILE = r"C:\Scripts\P03139\nazeel_log.txt"
 
 # Table names
